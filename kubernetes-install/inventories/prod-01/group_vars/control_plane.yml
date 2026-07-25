@@ -1,0 +1,25 @@
+---
+# Минимальные ресурсы control-plane (раздел 5.2 playbook). Проверяются preflight.
+preflight_min_cpu: 4
+preflight_min_ram_mb: 8000
+preflight_min_disk_root_gb: 80
+
+# Отдельный диск под etcd обязателен для prod.
+# Монтируется ролью os_prepare ДО kubeadm init (S12): kubeadm создаёт
+# /var/lib/etcd при init, и смонтировать диск поверх уже наполненного каталога
+# означает спрятать данные etcd.
+etcd_disk_device: ~ # "/dev/sdb" — проставить, либо etcd_disk_manage: false
+etcd_disk_manage: true
+etcd_disk_mountpoint: /var/lib/etcd
+etcd_disk_filesystem: ext4
+etcd_disk_mount_opts: "defaults,noatime"
+preflight_min_disk_etcd_gb: 20
+
+# Порты, которые должны быть доступны между control-plane узлами
+preflight_required_ports:
+  - 6443 # kube-apiserver
+  - 2379 # etcd client
+  - 2380 # etcd peer
+  - 10250 # kubelet API
+  - 10257 # kube-controller-manager (localhost, проверяется локально)
+  - 10259 # kube-scheduler (localhost, проверяется локально)

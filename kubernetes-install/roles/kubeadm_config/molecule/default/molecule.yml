@@ -1,0 +1,34 @@
+---
+# Главная ценность сценария — прогон `kubeadm config validate` на
+# отрендеренной InitConfiguration. Схема v1beta4 отличается от v1beta3
+# (extraArgs — список, а не словарь), и без этой проверки ошибка всплывёт
+# только на реальном kubeadm init.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: molecule-kubeadmcfg-cp-01
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs: [/run, /tmp]
+    groups: [kubernetes, control_plane]
+
+provisioner:
+  name: ansible
+  inventory:
+    links:
+      group_vars: ../../../../molecule-shared/group_vars
+    host_vars:
+      molecule-kubeadmcfg-cp-01:
+        ansible_host: 10.99.0.21
+
+verifier:
+  name: ansible

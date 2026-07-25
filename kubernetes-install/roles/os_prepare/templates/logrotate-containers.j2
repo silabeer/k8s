@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Подстраховка на случай, если containerd пишет логи мимо ротации kubelet.
+# Основную ротацию логов контейнеров выполняет kubelet
+# (containerLogMaxSize / containerLogMaxFiles).
+/var/log/containers/*.log
+/var/log/pods/*/*/*.log
+{
+    rotate 5
+    daily
+    maxsize 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+}

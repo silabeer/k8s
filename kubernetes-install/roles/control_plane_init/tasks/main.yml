@@ -1,0 +1,21 @@
+---
+- name: Determine whether the control plane is already initialized
+  ansible.builtin.import_tasks: precheck.yml
+
+- name: Initialize the control plane
+  ansible.builtin.import_tasks: init.yml
+  when: not control_plane_init_already_done | bool
+
+- name: Report skipped initialization
+  ansible.builtin.debug:
+    msg: >-
+      Control plane уже инициализирован ({{ control_plane_init_skip_reason }}).
+      kubeadm init пропущен — повторный запуск создал бы новый кластер
+      (раздел 24).
+  when: control_plane_init_already_done | bool
+
+- name: Configure kubeconfig access
+  ansible.builtin.import_tasks: kubeconfig.yml
+
+- name: Verify the control plane
+  ansible.builtin.import_tasks: verify.yml

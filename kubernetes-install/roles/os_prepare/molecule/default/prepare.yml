@@ -1,0 +1,12 @@
+---
+- name: Prepare
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Bootstrap python and apt metadata
+      ansible.builtin.raw: |
+        set -e
+        apt-get update -qq
+        apt-get install -y -qq python3
+      changed_when: true

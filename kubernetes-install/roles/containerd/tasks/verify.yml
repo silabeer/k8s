@@ -1,0 +1,71 @@
+---
+- name: Wait for the CRI socket to appear
+  ansible.builtin.wait_for:
+    path: "{{ containerd_socket }}"
+    state: present
+    timeout: 60
+
+- name: Check containerd service state  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl is-active containerd
+  register: containerd_active
+  changed_when: false
+  failed_when: containerd_active.stdout | trim != 'active'
+
+- name: Query CRI info
+  ansible.builtin.command:
+    cmd: crictl info -o json
+  register: containerd_crictl_info
+  changed_when: false
+
+- name: Assert CRI info is valid JSON
+  ansible.builtin.assert:
+    that:
+      - containerd_crictl_info.stdout | from_json is mapping
+    fail_msg: "crictl info вернул невалидный JSON."
+    quiet: true
+
+- name: Dump effective containerd configuration
+  ansible.builtin.command:
+    cmd: containerd config dump
+  register: containerd_effective_config
+  changed_when: false
+
+# Проверяется именно effective config, а не отрендеренный файл: containerd
+# сливает его с дефолтами, и ошибка в имени плагина проявится как молча
+# проигнорированная секция.
+- name: Assert systemd cgroup driver is effective
+  ansible.builtin.assert:
+    that:
+      - containerd_effective_config.stdout is search('SystemdCgroup\s*=\s*true')
+    fail_msg: >-
+      SystemdCgroup не включён в effective-конфигурации containerd.
+      Скорее всего, имя плагина в шаблоне не соответствует версии containerd.
+    quiet: true
+  when: containerd_systemd_cgroup | bool
+
+- name: Assert registry config_path is effective
+  ansible.builtin.assert:
+    that:
+      - containerd_effective_config.stdout is search(containerd_certs_dir)
+    fail_msg: >-
+      config_path зеркал реестра отсутствует в effective-конфигурации.
+    quiet: true
+
+- name: Assert the sandbox image matches the configured pause image
+  ansible.builtin.assert:
+    that:
+      - containerd_effective_config.stdout is search(pause_image | regex_escape)
+    fail_msg: >-
+      sandbox_image в effective-конфигурации не совпадает с {{ pause_image }}.
+    quiet: true
+
+- name: Pull a test image through the mirror
+  ansible.builtin.command:
+    cmd: "crictl pull {{ containerd_verify_pull_image }}"
+  register: containerd_pull
+  changed_when: false
+  retries: 3
+  delay: 5
+  until: containerd_pull is succeeded
+  when: containerd_verify_pull | bool

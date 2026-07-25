@@ -1,0 +1,37 @@
+---
+# =============================================================================
+# ТОЧКА РАСШИРЕНИЯ: провайдер zVirt/oVirt для CI.
+#
+# Не реализовано намеренно. Реализация требует доступа к конкретной инсталляции
+# zVirt: адреса API, имени golden image, профиля сети, storage domain и
+# сервисной учётной записи. Написанный вслепую код здесь был бы хуже
+# отсутствующего — он создавал бы иллюзию рабочего провайдера.
+#
+# Что нужно сделать при внедрении:
+#
+#   1. Установить коллекцию ovirt.ovirt (добавить в requirements.yml).
+#   2. Получить токен: ovirt.ovirt.ovirt_auth.
+#   3. Создать ВМ из того же golden image, что и production-узлы
+#      (ovirt.ovirt.ovirt_vm, clone: true, template: <golden image>).
+#      Состав стенда — как в Vagrantfile: 2 LB, 3 control-plane
+#      с отдельным диском под etcd, 1 worker.
+#   4. Дождаться получения адресов (ovirt.ovirt.ovirt_vm_info,
+#      fetch_nested: true, nested_attributes: [ips]).
+#   5. Сформировать molecule_instances в том же формате, что и
+#      provision-vagrant.yml:
+#        - instance: <имя>
+#          address: <ip>
+#          user: <пользователь automation>
+#          port: 22
+#          identity_file: <путь к ключу CI>
+#
+# Формат molecule_instances — единственный контракт между провайдерами;
+# всё остальное в сценариях от провайдера не зависит.
+# =============================================================================
+
+- name: Fail with implementation instructions
+  ansible.builtin.fail:
+    msg: >-
+      Провайдер zvirt не реализован: он требует параметров конкретной
+      инсталляции zVirt. Инструкция по реализации — в комментарии этого файла.
+      Для локального прогона используйте MOLECULE_PROVIDER=vagrant.

@@ -1,0 +1,98 @@
+---
+# Bootstrap token создаётся под конкретный join с коротким TTL и отзывается
+# сразу после (раздел 26). Постоянно хранимых токенов в проекте нет.
+
+- name: Create a bootstrap token and read the join parameters
+  ansible.builtin.command:
+    cmd: "kubeadm token create --ttl {{ node_join_token_ttl }} --print-join-command"
+  delegate_to: "{{ groups['control_plane'] | first }}"
+  register: node_join_command
+  changed_when: true
+  no_log: true
+
+- name: Extract token and CA certificate hash
+  ansible.builtin.set_fact:
+    node_join_token: "{{ node_join_command.stdout | regex_search('--token\\s+(\\S+)', '\\1') | first }}"
+    node_join_ca_hash: >-
+      {{ node_join_command.stdout
+         | regex_search('--discovery-token-ca-cert-hash\\s+(\\S+)', '\\1') | first }}
+  no_log: true
+
+- name: Assert the join parameters were parsed
+  ansible.builtin.assert:
+    that:
+      - node_join_token | length > 0
+      - node_join_ca_hash is match('sha256:[0-9a-f]{64}')
+    fail_msg: >-
+      Не удалось разобрать вывод `kubeadm token create --print-join-command`.
+      Формат вывода мог измениться в этой версии kubeadm.
+    quiet: true
+  no_log: true
+
+# Сертификаты, загруженные при init, живут в кластере два часа. Для join,
+# выполняемого позже, их надо загрузить заново (раздел 26).
+- name: Upload control plane certificates
+  ansible.builtin.command:
+    cmd: "kubeadm init phase upload-certs --upload-certs"
+  delegate_to: "{{ groups['control_plane'] | first }}"
+  register: node_join_upload_certs
+  changed_when: true
+  no_log: true
+  when: node_join_type == 'control-plane'
+
+- name: Extract the certificate key
+  ansible.builtin.set_fact:
+    node_join_certificate_key: "{{ node_join_upload_certs.stdout_lines | last | trim }}"
+  no_log: true
+  when: node_join_type == 'control-plane'
+
+- name: Assert the certificate key looks valid
+  ansible.builtin.assert:
+    that:
+      - node_join_certificate_key is match('[0-9a-f]{64}')
+    fail_msg: "Не удалось получить certificate key из вывода kubeadm."
+    quiet: true
+  no_log: true
+  when: node_join_type == 'control-plane'
+
+- name: Verify the API endpoint is reachable before joining
+  ansible.builtin.uri:
+    url: "https://{{ control_plane_endpoint }}/livez"
+    validate_certs: false
+    status_code: 200
+    timeout: 10
+  register: node_join_endpoint_probe
+  retries: 12
+  delay: 5
+  until: node_join_endpoint_probe.status == 200
+
+- name: Render the join configuration
+  ansible.builtin.template:
+    src: "kubeadm-join-{{ node_join_type }}.yaml.j2"
+    dest: "{{ node_join_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Run kubeadm join
+  ansible.builtin.command:
+    cmd: "kubeadm join --config {{ node_join_config_path }}"
+  register: node_join_result
+  changed_when: true
+  no_log: true
+
+# Конфигурация содержит токен и certificate key — на диске она не остаётся.
+- name: Remove the join configuration
+  ansible.builtin.file:
+    path: "{{ node_join_config_path }}"
+    state: absent
+
+- name: Revoke the bootstrap token
+  ansible.builtin.command:
+    cmd: "kubeadm token delete {{ node_join_token }}"
+  delegate_to: "{{ groups['control_plane'] | first }}"
+  changed_when: true
+  failed_when: false
+  no_log: true
+  when: node_join_revoke_token | bool

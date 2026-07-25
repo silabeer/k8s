@@ -1,0 +1,60 @@
+---
+- name: Get etcd endpoint health
+  ansible.builtin.command:
+    cmd: >-
+      kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
+      etcdctl
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt
+      --cert=/etc/kubernetes/pki/etcd/server.crt
+      --key=/etc/kubernetes/pki/etcd/server.key
+      --endpoints=https://127.0.0.1:2379
+      endpoint health --cluster -w json
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cluster_validation_etcd_health
+  changed_when: false
+
+- name: Assert every etcd endpoint is healthy
+  vars:
+    health: "{{ cluster_validation_etcd_health.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - health | length == groups['control_plane'] | length
+      - health | rejectattr('health') | list | length == 0
+    fail_msg: >-
+      Не все члены etcd здоровы: {{ health | rejectattr('health') | list }}.
+      Ожидается {{ groups['control_plane'] | length }} членов.
+    quiet: true
+
+- name: Get the etcd member list
+  ansible.builtin.command:
+    cmd: >-
+      kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
+      etcdctl
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt
+      --cert=/etc/kubernetes/pki/etcd/server.crt
+      --key=/etc/kubernetes/pki/etcd/server.key
+      member list -w json
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cluster_validation_etcd_members
+  changed_when: false
+
+- name: Assert the member list matches the control plane
+  vars:
+    members: "{{ (cluster_validation_etcd_members.stdout | from_json).members }}"
+  ansible.builtin.assert:
+    that:
+      - members | length == groups['control_plane'] | length
+      - groups['control_plane']
+        | difference(members | map(attribute='name') | list) | length == 0
+    fail_msg: >-
+      Члены etcd {{ members | map(attribute='name') | list }} не совпадают
+      с control-plane узлами {{ groups['control_plane'] }}. Осиротевший член
+      от удалённого узла ломает кворум при следующем перезапуске.
+    quiet: true
+
+- name: Verify a snapshot can be taken
+  ansible.builtin.include_role:
+    name: etcd_backup
+    tasks_from: snapshot_once

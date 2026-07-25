@@ -1,0 +1,141 @@
+---
+# Пересечение Pod/Service CIDR с корпоративными сетями ломает маршрутизацию
+# уже после установки и лечится только пересозданием кластера — CIDR нельзя
+# менять после init (раздел 24).
+
+- name: Assert Pod and Service CIDRs do not overlap each other or corporate networks
+  vars:
+    a_start: "{{ item.0 | ansible.utils.ipaddr('network') | ansible.utils.ipaddr('int') }}"
+    a_end: "{{ item.0 | ansible.utils.ipaddr('broadcast') | ansible.utils.ipaddr('int') }}"
+    b_start: "{{ item.1 | ansible.utils.ipaddr('network') | ansible.utils.ipaddr('int') }}"
+    b_end: "{{ item.1 | ansible.utils.ipaddr('broadcast') | ansible.utils.ipaddr('int') }}"
+  ansible.builtin.assert:
+    that:
+      - (a_end | int) < (b_start | int) or (b_end | int) < (a_start | int)
+    fail_msg: "Сеть {{ item.0 }} пересекается с {{ item.1 }}."
+    quiet: true
+  loop: >-
+    {{ ([pod_network_cidr, service_network_cidr] | product(corporate_networks) | list)
+       + [[pod_network_cidr, service_network_cidr]] }}
+  loop_control:
+    label: "{{ item.0 }} vs {{ item.1 }}"
+  run_once: true
+
+- name: Assert cluster DNS address belongs to the service CIDR
+  ansible.builtin.assert:
+    that:
+      - cluster_dns | ansible.utils.ipaddr(service_network_cidr) is not none
+    fail_msg: >-
+      cluster_dns {{ cluster_dns }} вне service CIDR {{ service_network_cidr }}.
+    quiet: true
+  run_once: true
+
+- name: Assert node addresses are outside Pod and Service CIDRs
+  vars:
+    node_ip: "{{ hostvars[item].ansible_host }}"
+  ansible.builtin.assert:
+    that:
+      - node_ip | ansible.utils.ipaddr(pod_network_cidr) is none
+      - node_ip | ansible.utils.ipaddr(service_network_cidr) is none
+    fail_msg: "Адрес узла {{ item }} ({{ node_ip }}) попадает в Pod или Service CIDR."
+    quiet: true
+  loop: "{{ groups['kubernetes'] }}"
+  run_once: true
+
+# ---------------------------------------------------------------------------
+# DNS
+# ---------------------------------------------------------------------------
+- name: Resolve the API endpoint hostname
+  ansible.builtin.command:
+    cmd: "getent ahostsv4 {{ control_plane_endpoint_host }}"
+  register: preflight_endpoint_dns
+  changed_when: false
+  failed_when: false
+
+- name: Assert the API endpoint resolves
+  ansible.builtin.assert:
+    that:
+      - preflight_endpoint_dns.rc == 0
+    fail_msg: >-
+      {{ control_plane_endpoint_host }} не резолвится.
+      DNS-запись должна быть создана до установки (раздел 5.4).
+    quiet: true
+
+- name: Assert the API endpoint resolves to the VIP
+  ansible.builtin.assert:
+    that:
+      - api_vip in preflight_endpoint_dns.stdout
+    fail_msg: >-
+      {{ control_plane_endpoint_host }} резолвится не в api_vip ({{ api_vip }}).
+      Получено: {{ preflight_endpoint_dns.stdout_lines | first | default('') }}.
+      Указывать IP первого control-plane узла как controlPlaneEndpoint нельзя
+      (раздел 3.2).
+    quiet: true
+
+- name: Resolve own hostname
+  ansible.builtin.command:
+    cmd: "getent ahostsv4 {{ inventory_hostname }}"
+  register: preflight_self_dns
+  changed_when: false
+  failed_when: false
+
+- name: Assert own hostname resolves
+  ansible.builtin.assert:
+    that:
+      - preflight_self_dns.rc == 0
+    fail_msg: >-
+      Собственный hostname {{ inventory_hostname }} не резолвится ни через DNS,
+      ни через /etc/hosts. kubelet не сможет зарегистрировать узел.
+    quiet: true
+
+# ---------------------------------------------------------------------------
+# Связность
+# ---------------------------------------------------------------------------
+- name: Check connectivity to every other cluster node
+  ansible.builtin.command:
+    cmd: "ping -c 2 -W {{ preflight_connect_timeout }} {{ hostvars[item].ansible_host }}"
+  loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
+  register: preflight_ping
+  changed_when: false
+  failed_when: preflight_ping.rc != 0
+  when: preflight_check_connectivity | bool
+
+- name: Check external VIP availability
+  # При api_vip_managed=false VIP обслуживает внешний корпоративный LB — он
+  # обязан отвечать до начала установки (раздел 3.2).
+  ansible.builtin.wait_for:
+    host: "{{ api_vip }}"
+    port: "{{ control_plane_endpoint_port }}"
+    timeout: "{{ preflight_connect_timeout }}"
+    state: started
+  when:
+    - not (api_vip_managed | bool)
+    - preflight_check_connectivity | bool
+  run_once: true
+
+# ---------------------------------------------------------------------------
+# MTU
+# ---------------------------------------------------------------------------
+- name: Assert MTU on the default interface matches the declared value
+  ansible.builtin.assert:
+    that:
+      - ansible_default_ipv4.mtu | int == node_mtu | int
+    fail_msg: >-
+      MTU интерфейса {{ ansible_default_ipv4.interface }} =
+      {{ ansible_default_ipv4.mtu }}, ожидается {{ node_mtu }}.
+      Рассинхронизация MTU между узлами даёт трудноуловимые обрывы
+      туннелированного трафика Cilium.
+    quiet: true
+  when: inventory_hostname in groups['kubernetes']
+
+- name: Assert MTU is identical across cluster nodes
+  vars:
+    mtus: >-
+      {{ groups['kubernetes']
+         | map('extract', hostvars, ['ansible_default_ipv4', 'mtu']) | unique | list }}
+  ansible.builtin.assert:
+    that:
+      - mtus | length == 1
+    fail_msg: "Узлы кластера имеют разный MTU: {{ mtus }}"
+    quiet: true
+  run_once: true

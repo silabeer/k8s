@@ -1,0 +1,31 @@
+---
+argocd_release_name: argocd
+argocd_checkout_dir: /tmp/gitops-checkout-argocd
+argocd_manifest_path: /etc/kubernetes/bootstrap/argocd-rendered.yaml
+
+# Тот же принцип единого источника values, что и для Cilium (раздел 18.1).
+argocd_values_relative_path: "values/argocd.yaml"
+
+# =============================================================================
+# Root Application берётся из GitOps-репозитория, а не из шаблона Ansible (S8).
+#
+# В playbook v2.0 Ansible создавал Application из собственного манифеста, после
+# чего wave -20 «переводил» его в AppProject platform-root — но кто именно
+# выполняет перевод, оставалось неопределённым. Если манифест root Application
+# не лежит в Git и не входит в bootstrap/kustomization.yaml, приложение
+# не самоуправляемо, и правка проекта навсегда остаётся ручной.
+# =============================================================================
+argocd_root_app_relative_path: "bootstrap/root-application.yaml"
+argocd_root_app_name: cluster-bootstrap
+
+# Argo CD, управляющий сам собой (wave -20)
+argocd_self_application: argocd
+
+argocd_field_manager: "{{ argocd.field_manager }}"
+
+argocd_ready_retries: 40
+argocd_ready_delay: 15
+
+# Секреты
+argocd_deploy_key_secret_key: gitops-deploy-key
+argocd_repo_secret_name: gitops-repository

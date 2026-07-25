@@ -1,0 +1,17 @@
+---
+# Этап 80. etcd backup через systemd timer на control-plane узлах.
+#
+# Это АЛЬТЕРНАТИВНЫЙ механизм. По умолчанию резервное копирование выполняет
+# CronJob, устанавливаемый через GitOps (wave 0, раздел 28.1), потому что он
+# управляется из Git. Роль etcd_backup применяется только в контурах,
+# где hostPath в Pod запрещён политикой.
+#
+# Запускать осознанно:
+#   ansible-playbook playbooks/80-backup.yml -e etcd_backup_enabled=true
+
+- name: Configure etcd snapshot timer on control-plane nodes
+  hosts: control_plane
+  gather_facts: true
+  become: true
+  roles:
+    - role: etcd_backup

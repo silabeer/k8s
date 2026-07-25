@@ -1,0 +1,22 @@
+---
+# Этап 10. Подготовка операционной системы.
+#
+# Роли `kernel` и `os_prepare` намеренно НЕ связаны meta-зависимостью:
+# os_prepare применяется ко всем узлам, включая LB, а kernel-тюнинг под
+# Kubernetes нужен только узлам кластера (раздел 3.1 spec).
+
+- name: Prepare operating system on all nodes
+  hosts: all
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: os_prepare
+
+- name: Configure kernel for Kubernetes nodes
+  hosts: kubernetes
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: kernel

@@ -1,0 +1,41 @@
+---
+# Пороги переопределяются в group_vars каждой группы (control_plane, workers,
+# load_balancers). Здесь — безопасный минимум.
+preflight_min_cpu: 2
+preflight_min_ram_mb: 2000
+preflight_min_disk_root_gb: 20
+preflight_min_disk_etcd_gb: 20
+preflight_required_ports: []
+
+# Обязательные переменные. Проверяются первой задачей роли: ошибка приходит
+# за секунды, а не на этапе 30 (раздел 3.4 spec).
+preflight_required_vars:
+  - cluster_name
+  - cluster_environment
+  - kubernetes_version
+  - kubernetes_apt_version
+  - containerd_version
+  - runc_version
+  - cni_plugins_version
+  - crictl_version
+  - helm_version
+  - pause_image_tag
+  - api_vip
+  - control_plane_endpoint_host
+  - pod_network_cidr
+  - service_network_cidr
+  - registry_host
+
+preflight_supported_distributions:
+  Ubuntu:
+    - "22.04"
+    - "24.04"
+preflight_min_kernel_version: "5.15"
+
+preflight_check_registry: true
+preflight_check_git: true
+preflight_check_helm_source: true
+preflight_check_connectivity: true
+
+preflight_connect_timeout: 10
+preflight_ntp_max_offset: "{{ ntp_max_offset_seconds | default(1) }}"

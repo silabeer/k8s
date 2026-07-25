@@ -1,0 +1,39 @@
+#!/bin/bash
+# {{ ansible_managed }}
+set -euo pipefail
+
+BACKUP_DIR="{{ etcd_backup_dir }}"
+TIMESTAMP="$(date +%Y%m%dT%H%M%S)"
+SNAPSHOT="${BACKUP_DIR}/etcd-snapshot-${TIMESTAMP}.db"
+POD="etcd-$(hostname -s)"
+
+export KUBECONFIG="{{ kubeconfig_path }}"
+
+# Snapshot создаётся внутри /var/lib/etcd (hostPath Pod'а etcd), проверяется,
+# и только затем переносится: иначе он попадёт в следующий snapshot.
+kubectl -n kube-system exec "${POD}" -- etcdctl \
+    --endpoints={{ etcd_backup_endpoints }} \
+    --cacert={{ etcd_backup_cacert }} \
+    --cert={{ etcd_backup_cert }} \
+    --key={{ etcd_backup_key }} \
+    snapshot save "/var/lib/etcd/etcd-snapshot-${TIMESTAMP}.db"
+
+kubectl -n kube-system exec "${POD}" -- \
+    etcdutl snapshot status "/var/lib/etcd/etcd-snapshot-${TIMESTAMP}.db" -w json
+
+mv "/var/lib/etcd/etcd-snapshot-${TIMESTAMP}.db" "${SNAPSHOT}"
+chmod 0600 "${SNAPSHOT}"
+
+{% if etcd_backup_upload_enabled %}
+# Snapshot, лежащий только на том же узле, резервной копией не является.
+aws s3 cp "${SNAPSHOT}" \
+    "s3://{{ etcd_backup_s3_bucket }}/{{ etcd_backup_s3_prefix }}/$(basename "${SNAPSHOT}")" \
+    --endpoint-url "{{ etcd_backup_s3_endpoint }}"
+{% else %}
+echo "ВНИМАНИЕ: выгрузка во внешнее хранилище выключена." >&2
+echo "Snapshot остаётся только на этом узле и не защищает от его потери." >&2
+{% endif %}
+
+find "${BACKUP_DIR}" -name 'etcd-snapshot-*.db' -mtime +{{ etcd_backup_retention_days }} -delete
+
+echo "Snapshot готов: ${SNAPSHOT}"

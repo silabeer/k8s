@@ -1,0 +1,66 @@
+---
+# Stage отличается от prod только значениями. Структура переменных та же —
+# см. inventories/prod-01/group_vars/all.yml, там же комментарии.
+#
+# Обновление любого компонента раскатывается сначала сюда, затем в prod.
+
+cluster_name: stage-01
+cluster_environment: stage
+
+kubernetes_version: ~
+kubernetes_apt_version: ~
+containerd_version: ~
+runc_version: ~
+cni_plugins_version: ~
+crictl_version: ~
+helm_version: ~
+pause_image_tag: ~
+
+# На стенде используется внешний LB, этап 05 пропускается.
+api_vip: ~ # "10.20.1.20"
+api_vip_managed: false
+api_vip_interface: ~
+control_plane_endpoint_host: ~ # "k8s-api.stage.company.local"
+control_plane_endpoint_port: 6443
+control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endpoint_port }}"
+
+pod_network_cidr: "10.200.0.0/16"
+service_network_cidr: "10.201.0.0/16"
+cluster_dns: "10.201.0.10"
+cluster_domain: "cluster.local"
+node_mtu: 1500
+
+corporate_networks:
+  - "10.20.0.0/16"
+
+registry_host: "harbor.company.local"
+image_repository: "{{ registry_host }}/k8s"
+pause_image: "{{ registry_host }}/k8s/pause:{{ pause_image_tag }}"
+
+gitops:
+  repo_url: "ssh://git@gitlab.company.local/platform/kubernetes-gitops.git"
+  revision: main
+  cluster_path: "clusters/{{ cluster_name }}"
+  ssh_host: "gitlab.company.local"
+  ssh_port: 22
+
+argocd:
+  version: ~
+  namespace: argocd
+  chart_source: oci
+  chart_name: argo-cd
+  chart_oci: "oci://{{ registry_host }}/charts/argo-cd"
+  chart_repo: "https://argoproj.github.io/argo-helm"
+  field_manager: argocd-controller
+  root_app_automated: false
+
+cni:
+  name: cilium
+  version: ~
+  chart_source: oci
+  chart_name: cilium
+  chart_oci: "oci://{{ registry_host }}/charts/cilium"
+  chart_repo: "https://helm.cilium.io/"
+
+secret_backend: openbao
+openbao_cluster_path: "kubernetes/{{ cluster_name }}"

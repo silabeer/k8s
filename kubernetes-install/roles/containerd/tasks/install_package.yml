@@ -1,0 +1,23 @@
+---
+- name: Assert package version is pinned
+  ansible.builtin.assert:
+    that:
+      - containerd_apt_version is not none
+      - containerd_apt_version | length > 0
+    fail_msg: >-
+      containerd_install_method=package требует containerd_apt_version.
+      Использование latest запрещено (раздел 6 playbook).
+    quiet: true
+
+- name: Install containerd package
+  ansible.builtin.apt:
+    name: "{{ containerd_package_name }}={{ containerd_apt_version }}"
+    state: present
+    update_cache: true
+    allow_change_held_packages: true
+  notify: Restart containerd
+
+- name: Hold containerd package
+  ansible.builtin.dpkg_selections:
+    name: "{{ containerd_package_name }}"
+    selection: hold

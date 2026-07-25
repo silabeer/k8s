@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: haproxy_keepalived
+  author: platform
+  description: >-
+    HAProxy + Keepalived для единой точки входа в Kubernetes API.
+    Применяется только при api_vip_managed: true.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

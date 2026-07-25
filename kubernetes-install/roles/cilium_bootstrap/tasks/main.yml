@@ -1,0 +1,30 @@
+---
+- name: Check whether Cilium is already managed by Argo CD
+  ansible.builtin.import_tasks: assert_not_argocd_owned.yml
+
+- name: Bootstrap Cilium
+  when: not cilium_argocd_owned | bool
+  block:
+    - name: Check out the GitOps repository
+      ansible.builtin.import_tasks: gitops_checkout.yml
+
+    - name: Render and apply the Cilium chart
+      ansible.builtin.import_tasks: render_apply.yml
+
+  always:
+    - name: Remove the GitOps checkout
+      ansible.builtin.file:
+        path: "{{ cilium_checkout_dir }}"
+        state: absent
+
+- name: Report Argo CD ownership
+  ansible.builtin.debug:
+    msg: >-
+      Cilium уже под управлением Argo CD (Application
+      {{ cilium_argocd_application }} в статусе Synced).
+      Применение манифестов пропущено целиком — вмешательство Ansible в
+      ресурсы после takeover запрещено (раздел 24).
+  when: cilium_argocd_owned | bool
+
+- name: Wait for Cilium to become healthy
+  ansible.builtin.import_tasks: verify.yml

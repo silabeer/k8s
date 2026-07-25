@@ -1,0 +1,74 @@
+---
+# Добавление узла в существующий кластер (раздел 26).
+#
+# Bootstrap token не хранится постоянно: роль node_join создаёт новый token
+# с TTL 30 минут, получает CA hash и (для control-plane) заново загружает
+# сертификаты через `kubeadm init phase upload-certs`.
+#
+#   ansible-playbook playbooks/maintenance/add-node.yml --limit k8s-worker-04
+#
+# Узел должен быть предварительно описан в inventory.
+
+- name: Preflight for the new node
+  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: preflight
+
+- name: Prepare operating system on the new node
+  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: os_prepare
+    - role: kernel
+    - role: containerd
+    - role: kubernetes_packages
+
+- name: Render kubeadm security configuration on new control-plane node
+  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: kubeadm_config
+      when: inventory_hostname in groups['control_plane']
+
+- name: Join the new node
+  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: node_join
+      node_join_type: "{{ 'control-plane' if inventory_hostname in groups['control_plane'] else 'worker' }}"
+
+- name: Verify the new node
+  hosts: control_plane[0]
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Wait for the new node to become Ready
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Node
+        name: "{{ ansible_limit }}"
+      register: new_node
+      retries: 30
+      delay: 10
+      until:
+        - new_node.resources | length > 0
+        - new_node.resources[0].status.conditions
+          | selectattr('type', 'equalto', 'Ready')
+          | selectattr('status', 'equalto', 'True') | list | length > 0
+
+    - name: Report node state
+      ansible.builtin.debug:
+        msg: >-
+          Узел {{ ansible_limit }} присоединён и Ready.
+          Serving-сертификат kubelet аппрувится автоматически через
+          kubelet-csr-approver (wave -10). Проверить:
+          kubectl get csr | grep {{ ansible_limit }}

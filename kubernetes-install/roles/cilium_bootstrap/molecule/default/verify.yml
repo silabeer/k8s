@@ -1,0 +1,120 @@
+---
+- name: Verify
+  hosts: control_plane[0]
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Assert all nodes became Ready
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Node
+      register: nodes
+      retries: 30
+      delay: 10
+      until:
+        - nodes.resources | length == groups['kubernetes'] | length
+        - nodes.resources
+          | map(attribute='status.conditions')
+          | map('selectattr', 'type', 'equalto', 'Ready')
+          | map('selectattr', 'status', 'equalto', 'True')
+          | map('list') | map('length') | select('equalto', 0) | list | length == 0
+
+    # Контроль того, что установка шла через helm template, а не helm install:
+    # helm install оставил бы release secret, которым Argo CD после takeover
+    # управлять не сможет (раздел 4.3).
+    - name: Look for a helm release secret
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Secret
+        namespace: kube-system
+        label_selectors: ["owner=helm"]
+      register: helm_secrets
+
+    - name: Assert no helm release secret exists
+      ansible.builtin.assert:
+        that:
+          - helm_secrets.resources | length == 0
+        fail_msg: >-
+          Найден helm release secret {{ helm_secrets.resources | map(attribute='metadata.name') | list }}.
+          Установка выполнена через helm install вместо helm template —
+          после takeover останется осиротевший релиз.
+        quiet: true
+
+    - name: Assert the Cilium DaemonSet is fully rolled out
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: DaemonSet
+        namespace: kube-system
+        name: cilium
+      register: cilium_ds
+      failed_when: >-
+        cilium_ds.resources | length == 0
+        or cilium_ds.resources[0].status.numberReady
+           != cilium_ds.resources[0].status.desiredNumberScheduled
+
+    - name: Assert resources are owned by the Argo CD field manager
+      # Bootstrap применяет манифесты тем же field manager, которым потом
+      # работает Argo CD, — иначе takeover породит конфликты владения полями.
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n kube-system get daemonset cilium
+          -o jsonpath={.metadata.managedFields[*].manager}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: field_managers
+      changed_when: false
+      failed_when: cilium_field_manager not in field_managers.stdout
+
+    - name: Exercise the takeover guard
+      block:
+        - name: Simulate an Argo CD Application for Cilium
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig_path }}"
+            state: present
+            definition:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Application
+              metadata:
+                name: cilium
+                namespace: "{{ argocd.namespace }}"
+              spec:
+                project: default
+                source:
+                  repoURL: "{{ gitops.repo_url }}"
+                  targetRevision: main
+                  path: infrastructure/cilium
+                destination:
+                  server: https://kubernetes.default.svc
+                  namespace: kube-system
+          register: fake_app
+          failed_when: false
+
+        - name: Re-run the takeover guard
+          ansible.builtin.include_role:
+            name: cilium_bootstrap
+            tasks_from: assert_not_argocd_owned
+          when: fake_app is succeeded
+
+        # Application создан, но не Synced — роль обязана НЕ считать компонент
+        # захваченным и при этом предупредить о незавершённом takeover.
+        - name: Assert an unsynced Application does not count as ownership
+          ansible.builtin.assert:
+            that:
+              - not cilium_argocd_owned | bool
+            fail_msg: >-
+              Guard посчитал Cilium захваченным по Application без статуса
+              Synced — незавершённый takeover заблокировал бы bootstrap.
+            quiet: true
+          when: fake_app is succeeded
+
+      always:
+        - name: Remove the simulated Application
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig_path }}"
+            state: absent
+            api_version: argoproj.io/v1alpha1
+            kind: Application
+            namespace: "{{ argocd.namespace }}"
+            name: cilium
+          failed_when: false

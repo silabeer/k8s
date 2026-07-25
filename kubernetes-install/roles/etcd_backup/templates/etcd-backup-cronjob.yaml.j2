@@ -1,0 +1,72 @@
+{# {{ ansible_managed }} #}
+# РЕФЕРЕНСНЫЙ манифест. Ansible его НЕ применяет — скопируйте в
+# infrastructure/etcd-backup/ GitOps-репозитория (wave 0, раздел 28.1).
+#
+# Ключевые детали, которые легко упустить:
+#   * hostNetwork: true — без него Pod не достучится до 127.0.0.1:2379;
+#   * tolerations на taint control-plane — иначе Pod никуда не запланируется;
+#   * nodeSelector на control-plane — сертификаты etcd есть только там;
+#   * hostPath к /etc/kubernetes/pki/etcd — только чтение.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etcd-backup
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          # Pod обращается к etcd по 127.0.0.1:2379 — без hostNetwork
+          # этот адрес указывает внутрь сетевого namespace Pod'а.
+          hostNetwork: true
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          securityContext:
+            runAsUser: 0
+          containers:
+            - name: etcd-backup
+              image: {{ image_repository }}/etcd:REPLACE_WITH_CLUSTER_ETCD_VERSION
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  TS="$(date +%Y%m%dT%H%M%S)"
+                  etcdctl \
+                    --endpoints={{ etcd_backup_endpoints }} \
+                    --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+                    --cert=/etc/kubernetes/pki/etcd/server.crt \
+                    --key=/etc/kubernetes/pki/etcd/server.key \
+                    snapshot save "/backup/etcd-snapshot-${TS}.db"
+                  etcdutl snapshot status "/backup/etcd-snapshot-${TS}.db" -w json
+                  # Выгрузка во внешнее S3 добавляется здесь; snapshot,
+                  # оставшийся в кластере, не защищает от потери кластера.
+              volumeMounts:
+                - name: etcd-certs
+                  mountPath: /etc/kubernetes/pki/etcd
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: etcd-certs
+              hostPath:
+                path: /etc/kubernetes/pki/etcd
+                type: Directory
+            - name: backup
+              hostPath:
+                path: {{ etcd_backup_dir }}
+                type: DirectoryOrCreate

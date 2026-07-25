@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# Без ограничения journald на узле с активными Pod способен занять весь /var
+# и уронить kubelet по disk pressure.
+[Journal]
+Storage=persistent
+Compress=yes
+SystemMaxUse={{ os_prepare_journald_max_use }}
+SystemMaxFileSize={{ os_prepare_journald_max_file_size }}
+RateLimitIntervalSec=30s
+RateLimitBurst=10000

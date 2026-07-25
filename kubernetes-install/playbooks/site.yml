@@ -1,0 +1,42 @@
+---
+# Полная установка кластера.
+#
+#   ansible-playbook -i inventories/prod-01/hosts.yml playbooks/site.yml
+#
+# 05-load-balancer.yml внутри содержит условие api_vip_managed.
+# 80-backup.yml не входит в site.yml: механизм резервного копирования по
+# умолчанию — CronJob из GitOps (раздел 28), роль etcd_backup применяется
+# только в контурах, где hostPath запрещён.
+
+- name: Stage 00 — preflight checks
+  import_playbook: 00-preflight.yml
+
+- name: Stage 05 — API endpoint load balancer
+  import_playbook: 05-load-balancer.yml
+
+- name: Stage 10 — operating system preparation
+  import_playbook: 10-os-prepare.yml
+
+- name: Stage 20 — containerd
+  import_playbook: 20-containerd.yml
+
+- name: Stage 30 — Kubernetes packages
+  import_playbook: 30-kubernetes-packages.yml
+
+- name: Stage 40 — first control-plane node
+  import_playbook: 40-control-plane-init.yml
+
+- name: Stage 41 — remaining control-plane nodes
+  import_playbook: 41-control-plane-join.yml
+
+- name: Stage 42 — worker nodes
+  import_playbook: 42-workers-join.yml
+
+- name: Stage 50 — Cilium bootstrap
+  import_playbook: 50-cni-bootstrap.yml
+
+- name: Stage 60 — Argo CD bootstrap
+  import_playbook: 60-argocd-bootstrap.yml
+
+- name: Stage 70 — validation
+  import_playbook: 70-validation.yml

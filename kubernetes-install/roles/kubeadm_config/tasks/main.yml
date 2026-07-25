@@ -1,0 +1,54 @@
+---
+- name: Create Kubernetes configuration directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ kubeadm_config_dir }}"
+      mode: "0755"
+    - path: "{{ audit_log_dir }}"
+      mode: "0700"
+
+- name: Resolve secrets
+  ansible.builtin.import_tasks: resolve_secrets.yml
+
+- name: Render encryption configuration
+  ansible.builtin.import_tasks: encryption_config.yml
+
+- name: Render audit policy
+  ansible.builtin.template:
+    src: audit-policy.yaml.j2
+    dest: "{{ kubeadm_audit_policy_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Render admission configuration
+  ansible.builtin.template:
+    src: admission-config.yaml.j2
+    dest: "{{ kubeadm_admission_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: pod_security_admission_enabled | bool
+
+- name: Render kubeadm init configuration
+  ansible.builtin.template:
+    src: kubeadm-init.yaml.j2
+    dest: "{{ kubeadm_init_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  when: inventory_hostname == groups['control_plane'] | first
+
+- name: Validate kubeadm init configuration
+  ansible.builtin.command:
+    cmd: "kubeadm config validate --config {{ kubeadm_init_config_path }}"
+  register: kubeadm_config_validation
+  changed_when: false
+  when:
+    - kubeadm_config_validate | bool
+    - inventory_hostname == groups['control_plane'] | first

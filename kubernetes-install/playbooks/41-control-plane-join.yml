@@ -1,0 +1,13 @@
+---
+# Этап 41. Присоединение остальных control-plane узлов.
+# Строго последовательно, по одному узлу (раздел 15).
+
+- name: Join remaining control-plane nodes
+  hosts: control_plane[1:]
+  serial: 1
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: node_join
+      node_join_type: control-plane

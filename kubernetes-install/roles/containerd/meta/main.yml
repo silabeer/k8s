@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: containerd
+  author: platform
+  description: >-
+    Установка и настройка containerd 2.x: CRI, systemd cgroup driver,
+    registry-зеркала через config_path и hosts.toml, CNI-плагины, crictl.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

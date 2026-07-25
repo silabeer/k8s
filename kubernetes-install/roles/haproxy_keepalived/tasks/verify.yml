@@ -1,0 +1,66 @@
+---
+- name: Validate HAProxy configuration syntax
+  ansible.builtin.command:
+    cmd: "haproxy -c -f {{ haproxy_config_path }}"
+  changed_when: false
+
+- name: Check haproxy service state  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl is-active haproxy
+  register: haproxy_active
+  changed_when: false
+  failed_when: haproxy_active.stdout | trim != 'active'
+
+- name: Check keepalived service state  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl is-active keepalived
+  register: keepalived_active
+  changed_when: false
+  failed_when: keepalived_active.stdout | trim != 'active'
+
+# До kubeadm init ни один backend не отвечает — HAProxy обязан стартовать
+# и в этом состоянии (раздел 10). Проверяем, что порт слушается.
+- name: Verify the frontend port is listening
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ haproxy_frontend_port }}"
+    timeout: 30
+    state: started
+
+# Выборы VRRP занимают несколько интервалов advert_int. Ждём на самом узле,
+# а не в assert: assert с run_once не перечитает факты других хостов между
+# попытками, потому что между ними ни одна задача не выполняется.
+- name: Wait for VRRP election to settle
+  ansible.builtin.wait_for:
+    timeout: "{{ keepalived_advert_int * 5 }}"
+
+- name: Read addresses on the VIP interface
+  ansible.builtin.command:
+    cmd: "ip -o -4 addr show dev {{ api_vip_interface }}"
+  register: haproxy_vip_addrs
+  changed_when: false
+
+- name: Determine whether this node holds the VIP
+  ansible.builtin.set_fact:
+    haproxy_holds_vip: "{{ api_vip in haproxy_vip_addrs.stdout }}"
+
+- name: Assert exactly one node holds the VIP
+  vars:
+    # select('extract', ...) здесь не работает: extract — фильтр, а не тест.
+    vip_holders: >-
+      {{ groups['load_balancers'] | map('extract', hostvars)
+         | selectattr('haproxy_holds_vip', 'defined')
+         | selectattr('haproxy_holds_vip')
+         | map(attribute='inventory_hostname') | list }}
+  ansible.builtin.assert:
+    that:
+      - vip_holders | length == 1
+    fail_msg: >-
+      VIP {{ api_vip }} поднят не ровно на одном узле, держат: {{ vip_holders }}.
+      Ноль держателей — keepalived не выбрал master (проверьте unicast_peer и
+      прохождение protocol 112). Несколько — split-brain VRRP, проверьте
+      уникальность virtual_router_id {{ keepalived_virtual_router_id }}
+      в сетевом сегменте.
+    success_msg: "VIP {{ api_vip }} держит {{ vip_holders | first }}"
+    quiet: true
+  run_once: true

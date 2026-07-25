@@ -1,0 +1,24 @@
+# Устанавливается из внутреннего PyPI mirror:
+#   pip install -r requirements-test.txt -i https://pypi.company.local/simple
+#
+# ansible-core >= 2.16 обязателен: kubeadm v1beta4 и containerd 2.x требуют
+# современных фильтров и поведения kubernetes.core 5.x.
+ansible-core==2.17.6
+molecule==24.9.0
+molecule-plugins[docker]==23.5.3
+docker==7.1.0
+ansible-lint==24.9.2
+yamllint==1.35.1
+pytest==8.3.3
+pytest-testinfra==10.1.1
+
+# Требуется kubernetes.core для работы с API кластера
+kubernetes==31.0.0
+
+# Требуется фильтру ansible.utils.ipaddr — на нём построены проверки
+# пересечения Pod/Service CIDR в роли preflight. Без него роль падает
+# с ошибкой импорта, а не с внятным сообщением.
+netaddr==1.3.0
+
+# Требуется community.hashi_vault для OpenBao
+hvac==2.3.0

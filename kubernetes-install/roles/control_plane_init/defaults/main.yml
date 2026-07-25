@@ -1,0 +1,14 @@
+---
+control_plane_init_config_path: /etc/kubernetes/kubeadm-init.yaml
+control_plane_init_admin_conf: /etc/kubernetes/admin.conf
+
+# Куда положить kubeconfig для пользователя автоматизации
+control_plane_init_user_kubeconfig: true
+control_plane_init_user: "{{ ansible_user | default('ansible') }}"
+
+control_plane_init_readyz_retries: 60
+control_plane_init_readyz_delay: 5
+
+# Предзагрузка образов до init: при недоступности зеркала ошибка приходит
+# до необратимой операции, а не в её середине.
+control_plane_init_pull_images: true

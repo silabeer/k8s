@@ -1,0 +1,42 @@
+# {{ ansible_managed }}
+#
+# Схема version = 3 — containerd 2.x. Имена плагинов изменились относительно
+# 1.x: io.containerd.grpc.v1.cri разделён на io.containerd.cri.v1.images и
+# io.containerd.cri.v1.runtime. Секция registry.mirrors удалена, зеркала
+# задаются через config_path и hosts.toml.
+version = 3
+
+root = "{{ containerd_root }}"
+state = "{{ containerd_state }}"
+
+[grpc]
+  address = "{{ containerd_socket }}"
+
+[plugins."io.containerd.cri.v1.images"]
+  snapshotter = "{{ containerd_snapshotter }}"
+
+# sandbox_image должен совпадать с pause, ожидаемым kubeadm.
+# Проверить: kubeadm config images list --kubernetes-version v{{ kubernetes_version }}
+[plugins."io.containerd.cri.v1.images".pinned_images]
+  sandbox = "{{ pause_image }}"
+
+[plugins."io.containerd.cri.v1.images".registry]
+  config_path = "{{ containerd_certs_dir }}"
+
+[plugins."io.containerd.cri.v1.runtime"]
+  enable_selinux = false
+
+[plugins."io.containerd.cri.v1.runtime".cni]
+  bin_dir = "{{ containerd_cni_bin_dir }}"
+  conf_dir = "{{ containerd_cni_conf_dir }}"
+
+[plugins."io.containerd.cri.v1.runtime".containerd]
+  default_runtime_name = "runc"
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc]
+  runtime_type = "io.containerd.runc.v2"
+
+# Один cgroup driver для kubelet и runtime. Рассинхронизация приводит к тому,
+# что kubelet не видит потребление контейнеров и не применяет лимиты.
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runc.options]
+  SystemdCgroup = {{ containerd_systemd_cgroup | lower }}

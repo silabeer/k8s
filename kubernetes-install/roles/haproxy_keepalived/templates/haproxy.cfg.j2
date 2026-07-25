@@ -1,0 +1,52 @@
+{# {{ ansible_managed }} #}
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+    maxconn 20000
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+
+defaults
+    log     global
+    mode    tcp
+    option  dontlognull
+    retries 3
+    timeout connect {{ haproxy_timeout_connect }}
+    timeout client  {{ haproxy_timeout_client }}
+    timeout server  {{ haproxy_timeout_server }}
+    # watch-запросы к apiserver держат соединение часами; короткий таймаут
+    # рвёт их и заставляет контроллеры непрерывно переподключаться.
+
+frontend k8s-api
+    bind {{ haproxy_frontend_bind }}:{{ haproxy_frontend_port }}
+    mode tcp
+    option tcplog
+    default_backend k8s-api
+
+backend k8s-api
+    mode tcp
+    balance roundrobin
+    option tcp-check
+
+    # Проверка готовности по HTTP, а не голым TCP: apiserver может слушать
+    # порт, но возвращать 500 на /readyz — например, пока восстанавливается
+    # etcd или не прогрелись кеши. Голый `check` в такой момент отдаёт ему
+    # клиентский трафик.
+    option httpchk GET {{ haproxy_check_path }}
+    http-check expect status 200
+
+{% for host in groups['control_plane'] %}
+    server {{ host }} {{ hostvars[host].ansible_host }}:6443 check check-ssl verify none inter {{ haproxy_check_interval }} fall {{ haproxy_check_fall }} rise {{ haproxy_check_rise }}
+{% endfor %}
+
+{% if haproxy_stats_enabled %}
+# Статистика доступна только локально: наружу её отдавать незачем,
+# метрики снимаются агентом observability.
+listen stats
+    bind {{ haproxy_stats_bind }}:{{ haproxy_stats_port }}
+    mode http
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+{% endif %}

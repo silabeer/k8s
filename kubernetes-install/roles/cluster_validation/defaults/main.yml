@@ -1,0 +1,44 @@
+---
+cluster_validation_approve_csrs: true
+cluster_validation_check_encryption: true
+cluster_validation_check_etcd: true
+cluster_validation_check_network: true
+cluster_validation_check_argocd: true
+cluster_validation_check_certificates: true
+
+# Тест требует CSI и default StorageClass, которые приезжают через GitOps
+# (wave -10). При первом прогоне 70-validation.yml их ещё нет.
+cluster_validation_check_storage: false
+
+# Connectivity test занимает 10-20 минут и требует cilium CLI
+cluster_validation_cilium_connectivity: false
+
+cluster_validation_test_namespace: cluster-validation
+cluster_validation_encryption_secret: encryption-check
+
+# =============================================================================
+# Профиль cilium connectivity test для закрытого контура (раздел 17).
+#
+# Часть тестов обращается к внешним ресурсам (1.1.1.1, публичный DNS) и в
+# изолированной сети гарантированно падает. Конкретный набор исключений
+# подбирается один раз при внедрении и фиксируется здесь.
+# =============================================================================
+# Записано плоским списком аргументов, а не набором имён тестов: так видно
+# точную команду, и не требуется собирать пары --test/<имя> фильтрами.
+cluster_validation_cilium_test_args:
+  - "--test"
+  - "!to-fqdns"
+  - "--test"
+  - "!client-egress-l7"
+  - "--test"
+  - "!dns-only"
+  - "--test"
+  - "!to-cidr-external"
+cluster_validation_cilium_external_target: "{{ registry_host }}"
+cluster_validation_cilium_external_cidr: "10.0.0.0/8"
+
+# Предупреждение о скором истечении сертификатов control plane (S10)
+cluster_validation_cert_warn_days: 90
+
+cluster_validation_retries: 30
+cluster_validation_delay: 10

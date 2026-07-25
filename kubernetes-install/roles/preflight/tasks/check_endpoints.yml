@@ -1,0 +1,85 @@
+---
+# Доступность внешних для кластера систем. Прямого доступа в интернет узлы
+# не имеют — всё идёт через внутренние зеркала (раздел 6).
+
+- name: Check container registry availability
+  # Harbor отвечает 401 на /v2/ без токена — это нормальный признак живого
+  # реестра, поэтому 401 в списке допустимых кодов.
+  ansible.builtin.uri:
+    url: "https://{{ registry_host }}/v2/"
+    method: GET
+    status_code: [200, 401]
+    timeout: "{{ preflight_connect_timeout }}"
+    validate_certs: true
+  register: preflight_registry
+  when: preflight_check_registry | bool
+  retries: 3
+  delay: 5
+  until: preflight_registry is succeeded
+
+- name: Check Git repository reachability
+  ansible.builtin.wait_for:
+    host: "{{ gitops.ssh_host }}"
+    port: "{{ gitops.ssh_port }}"
+    timeout: "{{ preflight_connect_timeout }}"
+    state: started
+  when:
+    - preflight_check_git | bool
+    - inventory_hostname == groups['control_plane'] | first
+
+- name: Check Helm chart source availability
+  when:
+    - preflight_check_helm_source | bool
+    - inventory_hostname == groups['control_plane'] | first
+  block:
+    - name: Check Helm repository index
+      ansible.builtin.uri:
+        url: "{{ item }}index.yaml"
+        method: GET
+        status_code: 200
+        timeout: "{{ preflight_connect_timeout }}"
+      loop: >-
+        {{ [cni.chart_repo if cni.chart_source == 'repo' else None,
+            argocd.chart_repo if argocd.chart_source == 'repo' else None]
+           | reject('none') | map('regex_replace', '/?$', '/') | list }}
+      loop_control:
+        label: "{{ item }}"
+
+    # Для OCI-источника достаточно проверки самого Harbor выше: чарты лежат
+    # в том же реестре.
+    - name: Report OCI chart sources
+      ansible.builtin.debug:
+        msg: >-
+          Чарты берутся из OCI-реестра:
+          cilium={{ cni.chart_oci if cni.chart_source == 'oci' else 'n/a' }},
+          argo-cd={{ argocd.chart_oci if argocd.chart_source == 'oci' else 'n/a' }}
+
+- name: Check package repository availability
+  ansible.builtin.uri:
+    url: "{{ kubernetes_apt_repo_key_url }}"
+    method: GET
+    status_code: 200
+    timeout: "{{ preflight_connect_timeout }}"
+  when: inventory_hostname in groups['kubernetes']
+
+- name: Check artifact storage availability
+  ansible.builtin.uri:
+    url: "{{ containerd_tarball_url }}"
+    method: HEAD
+    status_code: 200
+    timeout: "{{ preflight_connect_timeout }}"
+  when:
+    - inventory_hostname in groups['kubernetes']
+    - containerd_install_method == 'binary'
+
+- name: Check secret backend availability
+  ansible.builtin.uri:
+    url: "{{ openbao_url }}/v1/sys/health"
+    method: GET
+    # 200 — unsealed active, 429 — standby, 473 — performance standby.
+    # Все три означают живой OpenBao.
+    status_code: [200, 429, 473]
+    timeout: "{{ preflight_connect_timeout }}"
+  when:
+    - secret_backend == 'openbao'
+    - inventory_hostname == groups['control_plane'] | first

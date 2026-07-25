@@ -1,0 +1,43 @@
+---
+# Обновление kubelet и kubectl на узле с последующим рестартом kubelet.
+
+- name: Unhold kubelet and kubectl
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: install
+  loop:
+    - kubelet
+    - kubectl
+
+- name: Install target kubelet and kubectl versions
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_target_apt_version }}"
+      - "kubectl={{ kubernetes_target_apt_version }}"
+    state: present
+    allow_change_held_packages: true
+    update_cache: true
+
+- name: Hold kubelet and kubectl
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubectl
+
+- name: Reload systemd and restart kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    daemon_reload: true
+    state: restarted
+    enabled: true
+
+- name: Wait for kubelet to become active  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl is-active kubelet
+  register: kubelet_active
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: kubelet_active.stdout | trim == 'active'

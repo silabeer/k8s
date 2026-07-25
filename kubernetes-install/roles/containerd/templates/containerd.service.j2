@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+# Официальный tarball containerd не содержит systemd-юнита — он ставится здесь.
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target local-fs.target dbus.service
+
+[Service]
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart={{ containerd_bin_dir }}/containerd --config {{ containerd_config_path }}
+
+Type=notify
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+
+# Лимиты снимаются: containerd управляет всеми контейнерами узла.
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+
+# containerd не должен убиваться OOM killer раньше рабочих нагрузок.
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target

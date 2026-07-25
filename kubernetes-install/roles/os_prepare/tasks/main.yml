@@ -1,0 +1,82 @@
+---
+- name: Configure hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+    use: systemd
+  when: os_prepare_manage_hostname | bool
+
+- name: Manage /etc/hosts entries for cluster nodes
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED: kubernetes cluster {{ cluster_name }}"
+    block: |
+      {% for host in groups['all'] %}
+      {{ hostvars[host].ansible_host }} {{ host }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+  when: os_prepare_manage_hosts | bool
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ os_prepare_base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configure proxy environment
+  ansible.builtin.template:
+    src: proxy.sh.j2
+    dest: /etc/profile.d/proxy.sh
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - os_prepare_manage_proxy | bool
+    - os_http_proxy | length > 0 or os_https_proxy | length > 0
+
+- name: Install organisation root CA certificates
+  ansible.builtin.import_tasks: ca_certificates.yml
+  when: os_prepare_manage_ca | bool
+
+- name: Configure time synchronisation
+  ansible.builtin.import_tasks: ntp.yml
+  when: os_prepare_manage_ntp | bool
+
+- name: Disable swap
+  ansible.builtin.import_tasks: swap.yml
+  when:
+    - os_prepare_manage_swap | bool
+    - inventory_hostname in groups['kubernetes']
+
+- name: Prepare dedicated etcd disk
+  ansible.builtin.import_tasks: etcd_disk.yml
+  when:
+    - inventory_hostname in groups['control_plane']
+    - etcd_disk_manage | bool
+
+- name: Configure journald limits
+  ansible.builtin.template:
+    src: journald-kubernetes.conf.j2
+    dest: /etc/systemd/journald.conf.d/99-kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: os_prepare_manage_journald | bool
+  notify: Restart journald
+
+- name: Configure container log rotation
+  ansible.builtin.template:
+    src: logrotate-containers.j2
+    dest: /etc/logrotate.d/kubernetes-containers
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - os_prepare_manage_logrotate | bool
+    - inventory_hostname in groups['kubernetes']
+
+- name: Configure firewall
+  ansible.builtin.import_tasks: firewall.yml
+  when: firewall_manage | bool

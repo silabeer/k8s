@@ -1,0 +1,112 @@
+---
+- name: Get Argo CD pods
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Pod
+    namespace: "{{ argocd.namespace }}"
+  register: cluster_validation_argocd_pods
+
+- name: Assert every Argo CD pod is running
+  vars:
+    unhealthy: >-
+      {{ cluster_validation_argocd_pods.resources
+         | rejectattr('status.phase', 'in', ['Running', 'Succeeded'])
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_argocd_pods.resources | length > 0
+      - unhealthy | length == 0
+    fail_msg: "Pod'ы Argo CD не в порядке: {{ unhealthy }}"
+    quiet: true
+
+- name: Get all Applications
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ argocd.namespace }}"
+  register: cluster_validation_apps
+
+- name: Get the root Application
+  ansible.builtin.set_fact:
+    cluster_validation_root_app: >-
+      {{ cluster_validation_apps.resources
+         | selectattr('metadata.name', 'equalto', argocd_root_app_name | default('cluster-bootstrap'))
+         | first | default({}) }}
+
+- name: Assert the root Application exists
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_root_app | length > 0
+    fail_msg: >-
+      Root Application не найден в namespace {{ argocd.namespace }}.
+      Прогоните playbooks/60-argocd-bootstrap.yml.
+    quiet: true
+
+# Finalizer на root Application означает, что его случайное удаление
+# каскадно снесёт всю кластерную конфигурацию (раздел 18.3).
+- name: Assert the root Application carries no cascading finalizer
+  ansible.builtin.assert:
+    that:
+      - "'resources-finalizer.argocd.argoproj.io'
+         not in (cluster_validation_root_app.metadata.finalizers | default([]))"
+    fail_msg: >-
+      На root Application стоит finalizer resources-finalizer.argocd.argoproj.io.
+      Удалите его: с ним `kubectl delete application cluster-bootstrap`
+      уничтожит конфигурацию кластера.
+    quiet: true
+
+- name: Report Application sync status
+  vars:
+    out_of_sync: >-
+      {{ cluster_validation_apps.resources
+         | rejectattr('status.sync.status', 'equalto', 'Synced')
+         | map(attribute='metadata.name') | list }}
+    degraded: >-
+      {{ cluster_validation_apps.resources
+         | selectattr('status.health.status', 'defined')
+         | selectattr('status.health.status', 'equalto', 'Degraded')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.debug:
+    msg: >-
+      Applications: всего {{ cluster_validation_apps.resources | length }},
+      OutOfSync: {{ out_of_sync | default(['нет']) }},
+      Degraded: {{ degraded | default(['нет']) }}.
+      {% if not argocd.root_app_automated | bool %}
+      Автоматика на root Application выключена — OutOfSync до первого ручного
+      sync ожидаем.
+      {% endif %}
+
+- name: Assert no Application is degraded
+  vars:
+    degraded: >-
+      {{ cluster_validation_apps.resources
+         | selectattr('status.health.status', 'defined')
+         | selectattr('status.health.status', 'equalto', 'Degraded')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - degraded | length == 0
+    fail_msg: "Applications в статусе Degraded: {{ degraded }}"
+    quiet: true
+
+# Cilium после takeover должен быть Synced без реальных диффов в spec
+# (раздел 23.7).
+- name: Check the Cilium Application after takeover
+  vars:
+    cilium_app: >-
+      {{ cluster_validation_apps.resources
+         | selectattr('metadata.name', 'equalto', 'cilium')
+         | first | default({}) }}
+  ansible.builtin.debug:
+    msg: >-
+      {% if cilium_app | length == 0 %}
+      Application cilium ещё не создан — takeover не выполнен. Cilium остаётся
+      под управлением bootstrap-установки (раздел 4.3).
+      {% else %}
+      Application cilium: sync={{ cilium_app.status.sync.status | default('?') }},
+      health={{ cilium_app.status.health.status | default('?') }}.
+      При OutOfSync проверьте `argocd app diff cilium`: генерируемые чартом
+      сертификаты (cilium-ca, hubble TLS) должны быть вынесены в фиксированные
+      Secret или закрыты ignoreDifferences.
+      {% endif %}

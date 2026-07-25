@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# Bootstrap-шаг аппрува kubelet serving CSR (раздел 14.4).
+#
+# serverTLSBootstrap: true означает, что kubelet каждого узла запрашивает
+# serving-сертификат через CSR API, и kubeadm эти CSR НЕ аппрувит
+# автоматически. Без аппрува они остаются Pending, а metrics-server не может
+# обращаться к kubelet по TLS.
+#
+# Это разовая операция. Постоянно ротацию обслуживает kubelet-csr-approver,
+# устанавливаемый через Argo CD (wave -10).
+# =============================================================================
+
+- name: List certificate signing requests
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: certificates.k8s.io/v1
+    kind: CertificateSigningRequest
+  register: cluster_validation_csrs
+
+- name: Select pending kubelet serving CSRs from known nodes
+  # Аппрувятся только CSR, чьё имя запрашивающего соответствует узлу из
+  # inventory: аппрув всего подряд означал бы выдачу serving-сертификата
+  # любому, кто сумел получить bootstrap token.
+  ansible.builtin.set_fact:
+    cluster_validation_pending_csrs: >-
+      {{ cluster_validation_csrs.resources
+         | selectattr('spec.signerName', 'equalto', 'kubernetes.io/kubelet-serving')
+         | rejectattr('status.conditions', 'defined')
+         | selectattr('spec.username', 'in', expected_usernames)
+         | map(attribute='metadata.name') | list }}
+  vars:
+    expected_usernames: >-
+      {{ groups['kubernetes'] | map('regex_replace', '^(.*)$', 'system:node:\1') | list }}
+
+- name: Report CSRs that were skipped
+  vars:
+    all_pending: >-
+      {{ cluster_validation_csrs.resources
+         | selectattr('spec.signerName', 'equalto', 'kubernetes.io/kubelet-serving')
+         | rejectattr('status.conditions', 'defined')
+         | map(attribute='metadata.name') | list }}
+    skipped: "{{ all_pending | difference(cluster_validation_pending_csrs) }}"
+  ansible.builtin.debug:
+    msg: >-
+      Pending CSR от неизвестных inventory узлов НЕ аппрувлены: {{ skipped }}.
+      Разберитесь, откуда они — это может быть узел, забытый в inventory,
+      либо попытка получить сертификат по утёкшему bootstrap token.
+  when: skipped | length > 0
+
+- name: Approve pending kubelet serving CSRs
+  ansible.builtin.command:
+    cmd: "kubectl certificate approve {{ item }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  loop: "{{ cluster_validation_pending_csrs }}"
+  changed_when: true
+
+- name: Verify every node has an approved serving certificate
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: certificates.k8s.io/v1
+    kind: CertificateSigningRequest
+  register: cluster_validation_csrs_after
+  retries: 12
+  delay: 5
+  until: >-
+    cluster_validation_csrs_after.resources
+    | selectattr('spec.signerName', 'equalto', 'kubernetes.io/kubelet-serving')
+    | rejectattr('status.conditions', 'defined') | list | length == 0
+
+- name: Report the approval result
+  ansible.builtin.debug:
+    msg: >-
+      Аппрувнуто CSR: {{ cluster_validation_pending_csrs | length }}.
+      Дальнейшая ротация serving-сертификатов — задача kubelet-csr-approver
+      (wave -10), без него сертификаты протухнут через год.

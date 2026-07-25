@@ -1,0 +1,29 @@
+---
+# Минимальные ресурсы worker (раздел 5.2 playbook)
+preflight_min_cpu: 8
+preflight_min_ram_mb: 16000
+preflight_min_disk_root_gb: 100
+
+# Пул узла. Попадает в label `node-pool` при регистрации kubelet.
+# Бездоменный label — NodeRestriction его пропускает (в отличие от
+# node-role.kubernetes.io/*, см. B2).
+node_pool: general
+
+# Taints выделенных пулов выставляются ПРИ РЕГИСТРАЦИИ узла, а не через GitOps
+# (S7): иначе существует окно, в котором узел уже Ready, но ещё не затейнчен,
+# и на него успевает приземлиться чужой workload.
+#
+# Пример для ingress-пула (задавать в host_vars или отдельной группе):
+#   node_pool: ingress
+#   node_taints:
+#     - key: "node-pool"
+#       value: "ingress"
+#       effect: "NoSchedule"
+node_taints: []
+
+preflight_required_ports:
+  - 10250 # kubelet API
+  - 4240 # cilium health
+  - 4244 # hubble server
+  - 4245 # hubble relay (S12)
+  - 8472 # VXLAN, если не native routing

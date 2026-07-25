@@ -1,0 +1,56 @@
+---
+# =============================================================================
+# Срок жизни PKI control plane (S10).
+#
+# Сертификаты kubeadm живут один год. rotateCertificates покрывает только
+# клиентские сертификаты kubelet; apiserver, etcd и front-proxy обновляются
+# либо `kubeadm certs renew`, либо неявно при `kubeadm upgrade apply`.
+# Кластер, который год не апгрейдился и не обслуживался, умирает тихо.
+# =============================================================================
+
+- name: Check certificate expiration on every control-plane node
+  ansible.builtin.command:
+    cmd: kubeadm certs check-expiration
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['control_plane'] }}"
+  register: cluster_validation_certs
+  changed_when: false
+
+- name: Extract the minimum remaining days per node
+  # Вывод kubeadm содержит колонку RESIDUAL TIME вида "364d", "11h".
+  # Всё, что измеряется не в днях, считаем нулём дней — это уже авария.
+  ansible.builtin.set_fact:
+    cluster_validation_cert_days: >-
+      {{ cluster_validation_certs.results
+         | map(attribute='stdout')
+         | map('regex_findall', '(\d+)d\s')
+         | map('map', 'int') | map('list')
+         | map('min') | list }}
+
+- name: Assert no certificate is already expired
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_cert_days | min > 0
+    fail_msg: >-
+      Сертификаты control plane истекли или истекают в течение суток.
+      Немедленно выполните
+      playbooks/maintenance/renew-control-plane-certs.yml.
+    quiet: true
+
+- name: Warn about certificates expiring soon
+  ansible.builtin.debug:
+    msg: >-
+      ВНИМАНИЕ: до истечения сертификатов control plane осталось
+      {{ cluster_validation_cert_days | min }} дней (порог
+      {{ cluster_validation_cert_warn_days }}).
+      Запланируйте playbooks/maintenance/renew-control-plane-certs.yml
+      и убедитесь, что настроен алерт на
+      apiserver_client_certificate_expiration_seconds.
+  when: cluster_validation_cert_days | min < cluster_validation_cert_warn_days | int
+
+- name: Report certificate validity
+  ansible.builtin.debug:
+    msg: >-
+      Минимальный остаток срока сертификатов control plane:
+      {{ cluster_validation_cert_days | min }} дней.
+  when: cluster_validation_cert_days | min >= cluster_validation_cert_warn_days | int

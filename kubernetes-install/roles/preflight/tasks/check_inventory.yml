@@ -1,0 +1,82 @@
+---
+# Проверки корректности inventory. Все — run_once, данные берутся из hostvars.
+
+- name: Assert hostnames are unique
+  vars:
+    all_hostnames: "{{ groups['all'] | map('extract', hostvars, 'ansible_hostname') | list }}"
+  ansible.builtin.assert:
+    that:
+      - all_hostnames | length == all_hostnames | unique | length
+    fail_msg: >-
+      Обнаружены дублирующиеся hostname: {{
+        all_hostnames | community.general.counter
+        | dict2items | selectattr('value', 'gt', 1) | map(attribute='key') | list
+      }}
+    quiet: true
+  run_once: true
+
+- name: Assert inventory hostname matches actual hostname
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == ansible_hostname
+    fail_msg: >-
+      inventory_hostname `{{ inventory_hostname }}` не совпадает с фактическим
+      hostname `{{ ansible_hostname }}`. kubeadm регистрирует узел под фактическим
+      именем, из-за расхождения сломается delegate_to и назначение labels.
+    quiet: true
+  when: inventory_hostname in groups['kubernetes']
+
+- name: Assert ansible_host addresses are unique
+  vars:
+    all_ips: "{{ groups['all'] | map('extract', hostvars, 'ansible_host') | list }}"
+  ansible.builtin.assert:
+    that:
+      - all_ips | length == all_ips | unique | length
+    fail_msg: "Обнаружены дублирующиеся IP-адреса в inventory: {{ all_ips }}"
+    quiet: true
+  run_once: true
+
+- name: Assert control plane has an odd number of nodes
+  ansible.builtin.assert:
+    that:
+      - groups['control_plane'] | length is odd
+      - groups['control_plane'] | length >= 1
+    fail_msg: >-
+      Control plane содержит {{ groups['control_plane'] | length }} узлов.
+      etcd требует нечётного числа членов для кворума.
+    quiet: true
+  run_once: true
+
+- name: Warn about non-HA control plane
+  ansible.builtin.debug:
+    msg: >-
+      ВНИМАНИЕ: control plane из {{ groups['control_plane'] | length }} узла.
+      Для prod требуется минимум 3 (раздел 3.1).
+  when:
+    - groups['control_plane'] | length < 3
+    - cluster_environment == 'prod'
+  run_once: true
+
+- name: Assert load balancer pair is defined when the VIP is managed here
+  ansible.builtin.assert:
+    that:
+      - groups['load_balancers'] | default([]) | length >= 2
+    fail_msg: >-
+      api_vip_managed=true требует минимум двух LB-узлов для отказоустойчивости VIP.
+    quiet: true
+  when: api_vip_managed | bool
+  run_once: true
+
+- name: Assert keepalived priorities are unique
+  vars:
+    priorities: >-
+      {{ groups['load_balancers'] | map('extract', hostvars, 'keepalived_priority') | list }}
+  ansible.builtin.assert:
+    that:
+      - priorities | length == priorities | unique | length
+    fail_msg: >-
+      Приоритеты keepalived не уникальны: {{ priorities }}.
+      Одинаковые приоритеты дают неопределённый выбор master.
+    quiet: true
+  when: api_vip_managed | bool
+  run_once: true

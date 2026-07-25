@@ -1,0 +1,73 @@
+---
+# Официальный tarball containerd содержит только бинарники, без systemd-юнита
+# и без runc — то и другое ставится отдельно.
+
+- name: Check installed containerd version
+  ansible.builtin.command:
+    cmd: "{{ containerd_bin_dir }}/containerd --version"
+  register: containerd_installed_version
+  changed_when: false
+  failed_when: false
+
+- name: Install containerd binaries
+  when: containerd_version not in (containerd_installed_version.stdout | default(''))
+  block:
+    - name: Create temporary download directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: containerd
+      register: containerd_tmp
+
+    - name: Download containerd tarball
+      ansible.builtin.get_url:
+        url: "{{ containerd_tarball_url }}"
+        dest: "{{ containerd_tmp.path }}/containerd.tar.gz"
+        mode: "0644"
+      register: containerd_download
+      retries: 3
+      delay: 5
+      until: containerd_download is succeeded
+
+    - name: Unpack containerd binaries
+      ansible.builtin.unarchive:
+        src: "{{ containerd_tmp.path }}/containerd.tar.gz"
+        dest: /usr/local
+        remote_src: true
+        extra_opts:
+          - --no-same-owner
+      notify: Restart containerd
+
+  always:
+    - name: Remove temporary download directory
+      ansible.builtin.file:
+        path: "{{ containerd_tmp.path }}"
+        state: absent
+      when: containerd_tmp.path is defined
+
+- name: Check installed runc version
+  ansible.builtin.command:
+    cmd: "{{ containerd_bin_dir }}/runc --version"
+  register: containerd_runc_version
+  changed_when: false
+  failed_when: false
+
+- name: Install runc
+  ansible.builtin.get_url:
+    url: "{{ runc_binary_url }}"
+    dest: "{{ containerd_bin_dir }}/runc"
+    owner: root
+    group: root
+    mode: "0755"
+  when: runc_version not in (containerd_runc_version.stdout | default(''))
+  notify: Restart containerd
+
+- name: Install containerd systemd unit
+  ansible.builtin.template:
+    src: containerd.service.j2
+    dest: /etc/systemd/system/containerd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart containerd

@@ -1,0 +1,35 @@
+---
+- name: Check whether Argo CD already manages itself
+  ansible.builtin.import_tasks: assert_not_argocd_owned.yml
+
+- name: Bootstrap Argo CD
+  block:
+    - name: Check out the GitOps repository
+      ansible.builtin.import_tasks: gitops_checkout.yml
+
+    - name: Install Argo CD
+      ansible.builtin.import_tasks: install.yml
+      when: not argocd_self_owned | bool
+
+    - name: Wait for Argo CD to become ready
+      ansible.builtin.import_tasks: wait_ready.yml
+
+    - name: Create Git repository credentials
+      ansible.builtin.import_tasks: git_credentials.yml
+
+    - name: Apply the root Application
+      ansible.builtin.import_tasks: root_application.yml
+
+  always:
+    - name: Remove the GitOps checkout
+      ansible.builtin.file:
+        path: "{{ argocd_checkout_dir }}"
+        state: absent
+
+- name: Report Argo CD self-management
+  ansible.builtin.debug:
+    msg: >-
+      Argo CD уже управляет собой (Application {{ argocd_self_application }}
+      в статусе Synced). Переустановка пропущена: обновление выполняется
+      через PR в GitOps-репозиторий (раздел 2.2).
+  when: argocd_self_owned | bool

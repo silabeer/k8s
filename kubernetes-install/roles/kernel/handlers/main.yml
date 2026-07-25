@@ -1,0 +1,6 @@
+---
+- name: Reload kernel modules
+  ansible.builtin.systemd:
+    name: systemd-modules-load
+    state: restarted
+  when: kernel_sysctl_enforce | bool

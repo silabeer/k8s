@@ -1,0 +1,83 @@
+---
+- name: Create apt keyrings directory
+  ansible.builtin.file:
+    path: "{{ kubernetes_packages_keyring_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Kubernetes repository key
+  ansible.builtin.get_url:
+    url: "{{ kubernetes_apt_repo_key_url }}"
+    dest: /tmp/kubernetes-apt-key.asc
+    mode: "0644"
+  register: kubernetes_packages_key
+  retries: 3
+  delay: 5
+  until: kubernetes_packages_key is succeeded
+
+- name: Convert repository key to keyring format
+  ansible.builtin.command:
+    cmd: >-
+      gpg --dearmor --yes
+      -o {{ kubernetes_packages_keyring_path }}
+      /tmp/kubernetes-apt-key.asc
+    creates: "{{ kubernetes_packages_keyring_path }}"
+
+- name: Remove downloaded key file
+  ansible.builtin.file:
+    path: /tmp/kubernetes-apt-key.asc
+    state: absent
+
+- name: Configure Kubernetes apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by={{ kubernetes_packages_keyring_path }}]
+      {{ kubernetes_apt_repo_url }} /
+    filename: kubernetes
+    state: present
+    update_cache: true
+
+# Пакеты уже могут быть на hold после предыдущего прогона — снимаем, ставим
+# нужную версию, возвращаем hold.
+- name: Unhold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: install
+  loop: "{{ kubernetes_packages_list }}"
+  failed_when: false
+
+- name: Install pinned Kubernetes packages
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_apt_version }}"
+      - "kubeadm={{ kubernetes_apt_version }}"
+      - "kubectl={{ kubernetes_apt_version }}"
+      - "cri-tools={{ kubernetes_packages_crictl_apt_version }}"
+    state: present
+    update_cache: true
+    allow_change_held_packages: true
+
+# Без hold обычный unattended-upgrade способен поднять minor-версию kubelet
+# и рассинхронизировать её с kubeadm (раздел 13).
+- name: Hold Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ kubernetes_packages_list }}"
+
+- name: Enable kubelet
+  # kubelet намеренно не запускается: до kubeadm init/join у него нет
+  # конфигурации, и он будет перезапускаться в цикле. kubeadm стартует его сам.
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    daemon_reload: true
+
+- name: Install helm
+  ansible.builtin.import_tasks: helm.yml
+  when: kubernetes_packages_install_helm | bool
+
+- name: Verify installed versions
+  ansible.builtin.import_tasks: verify.yml

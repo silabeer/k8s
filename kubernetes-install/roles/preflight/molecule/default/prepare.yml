@@ -1,0 +1,26 @@
+---
+- name: Prepare
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install packages required by the checks
+      ansible.builtin.raw: |
+        set -e
+        apt-get update -qq
+        apt-get install -y -qq python3 iputils-ping dnsutils chrony
+      changed_when: true
+
+    # Роль резолвит control_plane_endpoint_host и требует, чтобы он указывал
+    # на api_vip. В контейнере это обеспечивается записью в /etc/hosts.
+    - name: Point the API endpoint hostname at the VIP
+      ansible.builtin.raw: |
+        grep -q 'k8s-api.molecule.test' /etc/hosts || \
+          echo '10.99.0.20 k8s-api.molecule.test' >> /etc/hosts
+      changed_when: true
+
+    - name: Make the container hostname resolvable
+      ansible.builtin.raw: |
+        grep -q "$(hostname)" /etc/hosts || \
+          echo "127.0.1.1 $(hostname)" >> /etc/hosts
+      changed_when: true

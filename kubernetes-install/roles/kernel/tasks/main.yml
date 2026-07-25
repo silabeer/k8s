@@ -1,0 +1,42 @@
+---
+- name: Render kernel modules configuration
+  ansible.builtin.template:
+    src: modules-load.conf.j2
+    dest: "{{ kernel_modules_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload kernel modules
+
+- name: Load kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    persistent: present
+  loop: "{{ kernel_modules }}"
+  when: kernel_sysctl_enforce | bool
+
+# Файл — единственный источник истины. ansible.posix.sysctl здесь не годится:
+# с sysctl_file он переписывает файл своим форматом и затирает шаблон.
+- name: Render sysctl configuration
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: "{{ kernel_sysctl_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: kernel_sysctl_file
+
+# Применяется сразу, а не хендлером: следующая задача проверяет фактические
+# значения в /proc, а хендлеры выполняются в конце play.
+- name: Apply sysctl configuration
+  ansible.builtin.command:
+    cmd: sysctl --system
+  when:
+    - kernel_sysctl_enforce | bool
+    - kernel_sysctl_file is changed
+  changed_when: true
+
+- name: Verify protectKernelDefaults sysctl values are effective
+  ansible.builtin.import_tasks: verify_protect_defaults.yml
+  when: kernel_sysctl_enforce | bool

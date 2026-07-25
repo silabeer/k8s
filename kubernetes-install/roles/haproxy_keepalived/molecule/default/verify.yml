@@ -1,0 +1,115 @@
+---
+- name: Verify
+  hosts: load_balancers
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Validate the HAProxy configuration syntax
+      ansible.builtin.command:
+        cmd: haproxy -c -f /etc/haproxy/haproxy.cfg
+      changed_when: false
+
+    - name: Read the HAProxy configuration
+      ansible.builtin.slurp:
+        src: /etc/haproxy/haproxy.cfg
+      register: haproxy_cfg
+
+    # Регрессионный тест на S6: голая TCP-проверка отдаёт трафик apiserver'у,
+    # который слушает порт, но возвращает 500 на /readyz.
+    - name: Assert the backend uses an HTTP readiness check
+      ansible.builtin.assert:
+        that:
+          - (haproxy_cfg.content | b64decode) is search('option httpchk GET /readyz')
+          - (haproxy_cfg.content | b64decode) is search('http-check expect status 200')
+          - (haproxy_cfg.content | b64decode) is search('check check-ssl verify none')
+        fail_msg: >-
+          Backend проверяется голым TCP вместо HTTP /readyz (S6).
+        quiet: true
+
+    - name: Assert /healthz is not used for load balancing
+      ansible.builtin.assert:
+        that:
+          - (haproxy_cfg.content | b64decode) is not search('httpchk GET /healthz')
+        fail_msg: >-
+          Используется /healthz — для целей балансировки он устарел и не
+          отражает готовность принимать трафик.
+        quiet: true
+
+    - name: Assert every control-plane node is in the backend pool
+      ansible.builtin.assert:
+        that:
+          - (haproxy_cfg.content | b64decode) is search('10.99.0.2' ~ item ~ ':6443')
+        fail_msg: "Узел 10.99.0.2{{ item }} отсутствует в backend-пуле."
+        quiet: true
+      loop: [1, 2, 3]
+
+    - name: Assert long-lived watch connections are not cut short
+      ansible.builtin.assert:
+        that:
+          - (haproxy_cfg.content | b64decode) is search('timeout client\s+4h')
+          - (haproxy_cfg.content | b64decode) is search('timeout server\s+4h')
+        fail_msg: >-
+          Короткий таймаут рвёт watch-запросы к apiserver и заставляет
+          контроллеры непрерывно переподключаться.
+        quiet: true
+
+    - name: Stat the keepalived configuration
+      ansible.builtin.stat:
+        path: /etc/keepalived/keepalived.conf
+      register: keepalived_stat
+
+    - name: Assert the keepalived configuration is not world-readable
+      ansible.builtin.assert:
+        that:
+          - keepalived_stat.stat.exists
+          - keepalived_stat.stat.mode == '0640'
+        fail_msg: "keepalived.conf содержит пароль VRRP и должен быть 0640."
+        quiet: true
+
+    - name: Validate the keepalived configuration syntax
+      ansible.builtin.command:
+        cmd: keepalived -t -f /etc/keepalived/keepalived.conf
+      changed_when: false
+
+    - name: Read the keepalived configuration
+      ansible.builtin.slurp:
+        src: /etc/keepalived/keepalived.conf
+      register: keepalived_cfg
+
+    - name: Assert VRRP uses unicast peers
+      ansible.builtin.assert:
+        that:
+          - (keepalived_cfg.content | b64decode) is search('unicast_src_ip')
+          - (keepalived_cfg.content | b64decode) is search('unicast_peer')
+        fail_msg: >-
+          Не настроен unicast VRRP. Во многих корпоративных сегментах
+          multicast не проходит через коммутацию.
+        quiet: true
+
+    - name: Assert the VIP is tracked by the haproxy health script
+      ansible.builtin.assert:
+        that:
+          - (keepalived_cfg.content | b64decode) is search('track_script')
+          - (keepalived_cfg.content | b64decode) is search('check_haproxy')
+        fail_msg: >-
+          VIP не привязан к живости haproxy: узел может быть доступен,
+          а балансировщик мёртв.
+        quiet: true
+
+    - name: Assert the health check script is executable
+      ansible.builtin.stat:
+        path: /etc/keepalived/check_haproxy.sh
+      register: check_script
+      failed_when: not (check_script.stat.exists and check_script.stat.xusr)
+
+    - name: Assert priorities differ between the two nodes
+      vars:
+        priorities: >-
+          {{ groups['load_balancers'] | map('extract', hostvars, 'keepalived_priority') | list }}
+      ansible.builtin.assert:
+        that:
+          - priorities | unique | length == priorities | length
+        fail_msg: "Одинаковые приоритеты дают неопределённый выбор master."
+        quiet: true
+      run_once: true

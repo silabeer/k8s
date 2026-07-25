@@ -1,0 +1,62 @@
+---
+# create-плейбук для delegated-драйвера molecule.
+#
+# Провайдер выбирается переменной MOLECULE_PROVIDER:
+#   vagrant — Vagrant + libvirt, локальная разработка (реализовано)
+#   zvirt   — API виртуализации, CI (точка расширения)
+#
+# Задача плейбука — создать ВМ и записать molecule_instance_config,
+# из которого molecule строит inventory.
+
+- name: Create test instances
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    molecule_provider: "{{ lookup('env', 'MOLECULE_PROVIDER') | default('vagrant', true) }}"
+    resources_dir: "{{ playbook_dir }}"
+
+    # Состав стенда. Должен совпадать с NODES в Vagrantfile.
+    # Сценарии, которым хватает меньшего стенда, переопределяют список
+    # через MOLECULE_NODES.
+    molecule_vagrant_nodes: >-
+      {{ (lookup('env', 'MOLECULE_NODES') | default('', true)).split(',')
+         | reject('equalto', '') | list
+         | default(['molecule-lb-01', 'molecule-lb-02',
+                    'molecule-cp-01', 'molecule-cp-02', 'molecule-cp-03',
+                    'molecule-worker-01'], true) }}
+
+  tasks:
+    - name: Assert the provider is supported
+      ansible.builtin.assert:
+        that:
+          - molecule_provider in ['vagrant', 'zvirt']
+        fail_msg: >-
+          MOLECULE_PROVIDER={{ molecule_provider }} не поддерживается.
+          Доступны: vagrant (реализовано), zvirt (точка расширения).
+        quiet: true
+
+    # Единственный контракт между провайдерами: заполненный molecule_instances.
+    - name: Initialise the instance list
+      ansible.builtin.set_fact:
+        molecule_instances: []
+
+    - name: Provision instances
+      ansible.builtin.include_tasks: "provision-{{ molecule_provider }}.yml"
+
+    - name: Assert the provider produced instances
+      ansible.builtin.assert:
+        that:
+          - molecule_instances | length > 0
+        fail_msg: >-
+          Провайдер {{ molecule_provider }} не заполнил molecule_instances.
+          Без него molecule построит пустой inventory, и сценарий упадёт
+          позже с невнятной ошибкой.
+        quiet: true
+
+    - name: Write the molecule instance config
+      ansible.builtin.copy:
+        content: "{{ molecule_instances | to_nice_yaml }}"
+        dest: "{{ molecule_ephemeral_directory }}/instance_config.yml"
+        mode: "0600"

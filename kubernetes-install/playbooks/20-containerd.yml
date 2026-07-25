@@ -1,0 +1,10 @@
+---
+# Этап 20. Установка containerd.
+
+- name: Install and configure containerd
+  hosts: kubernetes
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: containerd

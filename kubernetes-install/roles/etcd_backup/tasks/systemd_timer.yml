@@ -1,0 +1,57 @@
+---
+- name: Create the backup directory
+  ansible.builtin.file:
+    path: "{{ etcd_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the snapshot script
+  ansible.builtin.template:
+    src: etcd-snapshot.sh.j2
+    dest: "{{ etcd_backup_script_path }}"
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the systemd service unit
+  ansible.builtin.template:
+    src: etcd-backup.service.j2
+    dest: /etc/systemd/system/etcd-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install the systemd timer unit
+  ansible.builtin.template:
+    src: etcd-backup.timer.j2
+    dest: /etc/systemd/system/etcd-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Flush handlers before enabling the timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the timer
+  ansible.builtin.systemd:
+    name: etcd-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Run one snapshot to verify the configuration
+  ansible.builtin.command:
+    cmd: "{{ etcd_backup_script_path }}"
+  changed_when: true
+  register: etcd_backup_test_run
+
+- name: Verify a snapshot file was produced
+  ansible.builtin.find:
+    paths: "{{ etcd_backup_dir }}"
+    patterns: "etcd-snapshot-*.db"
+  register: etcd_backup_files
+  failed_when: etcd_backup_files.files | length == 0

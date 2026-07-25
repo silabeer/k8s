@@ -1,0 +1,30 @@
+---
+- name: Render the reference CronJob manifest for the GitOps repository
+  ansible.builtin.template:
+    src: etcd-backup-cronjob.yaml.j2
+    dest: "{{ etcd_backup_cronjob_reference_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: etcd_backup_render_cronjob_reference | bool
+
+- name: Report the reference manifest
+  ansible.builtin.debug:
+    msg: >-
+      Референсный манифест CronJob записан в
+      {{ etcd_backup_cronjob_reference_path }}. Скопируйте его в
+      infrastructure/etcd-backup/ GitOps-репозитория — это основной механизм
+      резервного копирования (раздел 28.1). systemd timer ниже — альтернатива
+      для контуров, где hostPath запрещён.
+  when: etcd_backup_render_cronjob_reference | bool
+
+- name: Configure the systemd timer
+  ansible.builtin.import_tasks: systemd_timer.yml
+  when: etcd_backup_enabled | bool
+
+- name: Report disabled timer
+  ansible.builtin.debug:
+    msg: >-
+      etcd_backup_enabled=false — systemd timer не настроен. Резервное
+      копирование выполняет CronJob из GitOps.
+  when: not etcd_backup_enabled | bool

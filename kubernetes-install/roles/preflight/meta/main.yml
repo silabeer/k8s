@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: preflight
+  author: platform
+  description: >-
+    Проверки до изменения серверов. Fail-fast: playbook завершается, если хотя бы
+    одна обязательная проверка не пройдена (раздел 9 playbook).
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - kubernetes
+    - preflight
+
+dependencies: []

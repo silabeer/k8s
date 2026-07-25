@@ -1,0 +1,16 @@
+---
+kubernetes_packages_list:
+  - kubelet
+  - kubeadm
+  - kubectl
+  - cri-tools
+
+kubernetes_packages_keyring_path: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+kubernetes_packages_sources_path: /etc/apt/sources.list.d/kubernetes.list
+
+# cri-tools версионируется отдельно от Kubernetes
+kubernetes_packages_crictl_apt_version: "{{ crictl_version }}-*"
+
+# helm нужен только узлу, выполняющему bootstrap Cilium и Argo CD
+kubernetes_packages_install_helm: "{{ inventory_hostname == groups['control_plane'] | first }}"
+kubernetes_packages_helm_bin_dir: /usr/local/bin

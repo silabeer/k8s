@@ -1,0 +1,50 @@
+---
+# Управление firewall выключено по умолчанию. Включать осознанно: ufw с
+# политикой DROP на FORWARD ломает маршрутизацию Pod-трафика Cilium.
+
+- name: Install ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+- name: Allow SSH before enabling the firewall
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+
+- name: Allow required cluster ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ (preflight_required_ports | default([])) + os_prepare_firewall_extra_ports }}"
+
+- name: Allow VRRP between load balancers
+  community.general.ufw:
+    rule: allow
+    proto: "112"
+    src: "{{ hostvars[item].ansible_host }}"
+  loop: "{{ groups['load_balancers'] | difference([inventory_hostname]) }}"
+  when: inventory_hostname in groups['load_balancers']
+
+- name: Allow all traffic between cluster nodes
+  # Между узлами кластера фильтрация не применяется: Cilium использует
+  # динамические порты для health-проверок и служебного трафика, перечислить
+  # их статически невозможно.
+  community.general.ufw:
+    rule: allow
+    src: "{{ hostvars[item].ansible_host }}"
+  loop: "{{ groups['kubernetes'] }}"
+  when: inventory_hostname in groups['kubernetes']
+
+- name: Allow forwarding for Pod traffic
+  community.general.ufw:
+    default: allow
+    direction: routed
+
+- name: Enable ufw
+  community.general.ufw:
+    state: enabled
+    policy: deny
+    direction: incoming

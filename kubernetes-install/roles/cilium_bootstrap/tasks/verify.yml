@@ -1,0 +1,67 @@
+---
+- name: Wait for the Cilium DaemonSet to become fully available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: DaemonSet
+    namespace: "{{ cilium_namespace }}"
+    name: cilium
+  register: cilium_ds
+  retries: "{{ cilium_status_retries }}"
+  delay: "{{ cilium_status_delay }}"
+  until:
+    - cilium_ds.resources | length > 0
+    - cilium_ds.resources[0].status.numberReady | default(0) > 0
+    - cilium_ds.resources[0].status.numberReady | default(0)
+      == cilium_ds.resources[0].status.desiredNumberScheduled | default(-1)
+
+- name: Wait for the Cilium operator to become available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ cilium_namespace }}"
+    name: cilium-operator
+  register: cilium_operator
+  retries: "{{ cilium_status_retries }}"
+  delay: "{{ cilium_status_delay }}"
+  until:
+    - cilium_operator.resources | length > 0
+    - cilium_operator.resources[0].status.readyReplicas | default(0) > 0
+
+- name: Wait for every node to become Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Node
+  register: cilium_nodes
+  retries: "{{ cilium_status_retries }}"
+  delay: "{{ cilium_status_delay }}"
+  until:
+    - cilium_nodes.resources | length == groups['kubernetes'] | length
+    - cilium_nodes.resources
+      | map(attribute='status.conditions') | map('selectattr', 'type', 'equalto', 'Ready')
+      | map('selectattr', 'status', 'equalto', 'True') | map('list') | map('length')
+      | select('equalto', 0) | list | length == 0
+
+- name: Check whether the cilium CLI is available
+  ansible.builtin.command:
+    cmd: which cilium
+  register: cilium_cli
+  changed_when: false
+  failed_when: false
+
+- name: Run cilium status
+  ansible.builtin.command:
+    cmd: cilium status --wait --wait-duration 5m
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cilium_status
+  changed_when: false
+  when: cilium_cli.rc == 0
+
+- name: Report Cilium state
+  ansible.builtin.debug:
+    msg: >-
+      Cilium готов: {{ cilium_ds.resources[0].status.numberReady }} из
+      {{ cilium_ds.resources[0].status.desiredNumberScheduled }} агентов,
+      все {{ cilium_nodes.resources | length }} узлов Ready.
+      {{ 'cilium CLI не установлен, cilium status пропущен.'
+         if cilium_cli.rc != 0 else '' }}

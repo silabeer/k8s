@@ -1,0 +1,133 @@
+---
+- name: Create the validation namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cluster_validation_test_namespace }}"
+        labels:
+          pod-security.kubernetes.io/enforce: restricted
+
+- name: Run connectivity checks
+  block:
+    - name: Create a DNS probe pod
+      # securityContext задан явно: namespace помечен restricted, и Pod
+      # без него будет отклонён Pod Security Admission.
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        wait: true
+        wait_timeout: 180
+        wait_condition:
+          type: Ready
+          status: "True"
+        definition:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dns-probe
+            namespace: "{{ cluster_validation_test_namespace }}"
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: probe
+                image: "{{ registry_host }}/k8s/e2e-test-images/agnhost:2.53"
+                command: ["sleep", "600"]
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  runAsNonRoot: true
+                  runAsUser: 65534
+                  capabilities:
+                    drop: ["ALL"]
+                  seccompProfile:
+                    type: RuntimeDefault
+
+    - name: Resolve the kubernetes service from inside a pod
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n {{ cluster_validation_test_namespace }} exec dns-probe --
+          nslookup kubernetes.default.svc.{{ cluster_domain }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: cluster_validation_dns
+      changed_when: false
+      retries: 6
+      delay: 10
+      until: cluster_validation_dns.rc == 0
+
+    - name: Assert DNS resolves to the cluster DNS service
+      ansible.builtin.assert:
+        that:
+          - cluster_validation_dns.stdout is search(service_network_cidr | ansible.utils.ipaddr('network') | regex_replace('\.0$', ''))
+        fail_msg: >-
+          Разрешение kubernetes.default вернуло неожиданный адрес:
+          {{ cluster_validation_dns.stdout }}
+        quiet: true
+
+    - name: Reach the API server through the service network
+      ansible.builtin.command:
+        cmd: >-
+          kubectl -n {{ cluster_validation_test_namespace }} exec dns-probe --
+          curl -sk --max-time 10 https://kubernetes.default.svc.{{ cluster_domain }}/version
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: cluster_validation_svc
+      changed_when: false
+      failed_when: cluster_validation_svc.rc != 0
+
+  always:
+    - name: Remove the validation namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: absent
+        kind: Namespace
+        name: "{{ cluster_validation_test_namespace }}"
+        wait: true
+        wait_timeout: 180
+
+- name: Run the Cilium connectivity test
+  when: cluster_validation_cilium_connectivity | bool
+  block:
+    # Часть тестов обращается к внешним ресурсам (1.1.1.1, публичный DNS)
+    # и в изолированной сети гарантированно падает — профиль исключений
+    # фиксирован в переменных роли (раздел 17).
+    - name: Execute cilium connectivity test with the closed-network profile
+      ansible.builtin.command:
+        argv: >-
+          {{ ['cilium', 'connectivity', 'test']
+             + cluster_validation_cilium_test_args
+             + ['--external-target', cluster_validation_cilium_external_target,
+                '--external-cidr', cluster_validation_cilium_external_cidr] }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: cluster_validation_cilium_test
+      changed_when: false
+
+  always:
+    # Namespace теста обязательно удаляется (раздел 17): он остаётся между
+    # прогонами и накапливает мусор.
+    - name: Remove cilium test namespaces
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          kubectl get ns -o name
+          | grep -E 'namespace/cilium-test' || true
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: cluster_validation_cilium_ns
+      changed_when: false
+
+    - name: Delete cilium test namespaces
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: absent
+        kind: Namespace
+        name: "{{ item | replace('namespace/', '') }}"
+        wait: true
+        wait_timeout: 300
+      loop: "{{ cluster_validation_cilium_ns.stdout_lines | default([]) }}"

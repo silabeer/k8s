@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: cilium_bootstrap
+  author: platform
+  description: >-
+    Первоначальная установка Cilium через helm template с values из
+    GitOps-репозитория. После takeover Argo CD роль не вмешивается.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

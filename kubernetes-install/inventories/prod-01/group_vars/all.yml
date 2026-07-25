@@ -1,0 +1,253 @@
+---
+# =============================================================================
+# ОБЯЗАТЕЛЬНЫЕ ПЕРЕМЕННЫЕ
+#
+# Все значения `~` (null) должны быть проставлены до первого запуска.
+# Роль preflight первой задачей делает assert на весь набор — ошибка приходит
+# за секунды, а не на этапе 30 (раздел 3.4 spec).
+#
+# Значения *.company.local и 10.10.x.x — плейсхолдеры контура. Заменить.
+# =============================================================================
+
+cluster_name: prod-01
+
+# Не `environment`: это зарезервированное ключевое слово Ansible на уровне
+# play/task, переменная с таким именем даёт трудноуловимые конфликты (S14).
+cluster_environment: prod
+
+# -----------------------------------------------------------------------------
+# Версии компонентов
+#
+# `latest` запрещён (раздел 6 playbook). Перед проставлением сверить
+# compatibility matrix: Kubernetes <-> containerd <-> Cilium <-> Argo CD.
+# -----------------------------------------------------------------------------
+kubernetes_version: ~ # "1.31.4" — без префикса v
+kubernetes_apt_version: ~ # "1.31.4-1.1" — точная версия apt-пакета
+containerd_version: ~ # "2.0.2"
+runc_version: ~ # "1.2.4"
+cni_plugins_version: ~ # "1.6.2"
+crictl_version: ~ # "1.31.1"
+helm_version: ~ # "3.16.3" — нужен на первом control-plane для bootstrap
+
+# Версия pause обязана совпадать с ожидаемой kubeadm.
+# Проверить: kubeadm config images list --kubernetes-version v<kubernetes_version>
+pause_image_tag: ~ # "3.10"
+
+# -----------------------------------------------------------------------------
+# Kubernetes API endpoint
+# -----------------------------------------------------------------------------
+api_vip: ~ # "10.10.1.20"
+api_vip_managed: true # false — внешний корпоративный LB, этап 05 пропускается
+api_vip_interface: ~ # интерфейс keepalived на LB-узлах, напр. "ens192"
+api_vip_cidr_prefix: 24
+
+control_plane_endpoint_host: ~ # "k8s-api.prod.company.local"
+control_plane_endpoint_port: 6443
+control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endpoint_port }}"
+
+# -----------------------------------------------------------------------------
+# Сеть кластера
+# -----------------------------------------------------------------------------
+pod_network_cidr: "10.100.0.0/16"
+service_network_cidr: "10.101.0.0/16"
+cluster_dns: "10.101.0.10"
+cluster_domain: "cluster.local"
+node_mtu: 1500
+
+# Сети, с которыми Pod/Service CIDR не должны пересекаться. Проверяется preflight.
+corporate_networks:
+  - "10.10.0.0/16"
+
+# -----------------------------------------------------------------------------
+# Реестр образов
+# -----------------------------------------------------------------------------
+registry_host: "harbor.company.local"
+image_repository: "{{ registry_host }}/k8s"
+pause_image: "{{ registry_host }}/k8s/pause:{{ pause_image_tag }}"
+
+# Зеркала для containerd. В containerd 2.x задаются ТОЛЬКО через config_path
+# и hosts.toml — секция mirrors внутри config.toml удалена (раздел 12 playbook).
+registry_mirrors:
+  - upstream: "docker.io"
+    host: "https://{{ registry_host }}/v2/proxy-docker.io"
+    capabilities: ["pull", "resolve"]
+    override_path: true
+  - upstream: "registry.k8s.io"
+    host: "https://{{ registry_host }}/v2/proxy-registry.k8s.io"
+    capabilities: ["pull", "resolve"]
+    override_path: true
+  - upstream: "quay.io"
+    host: "https://{{ registry_host }}/v2/proxy-quay.io"
+    capabilities: ["pull", "resolve"]
+    override_path: true
+  - upstream: "ghcr.io"
+    host: "https://{{ registry_host }}/v2/proxy-ghcr.io"
+    capabilities: ["pull", "resolve"]
+    override_path: true
+
+# -----------------------------------------------------------------------------
+# Источники пакетов и бинарников (внутренние зеркала)
+# -----------------------------------------------------------------------------
+# minor-версия выводится из kubernetes_version: 1.31.4 -> 1.31
+kubernetes_minor_version: "{{ kubernetes_version | regex_replace('^(\\d+\\.\\d+).*$', '\\1') }}"
+kubernetes_apt_repo_url: "https://mirror.company.local/kubernetes/core:/stable:/v{{ kubernetes_minor_version }}/deb/"
+kubernetes_apt_repo_key_url: "{{ kubernetes_apt_repo_url }}Release.key"
+
+# containerd 2.x отсутствует в репозиториях дистрибутивов на момент написания,
+# поэтому дефолт — установка из tarball. `package` оставлен для контуров,
+# где 2.x уже собран во внутреннем apt-репозитории.
+containerd_install_method: binary # binary | package
+artifacts_base_url: "https://artifacts.company.local"
+containerd_tarball_url: "{{ artifacts_base_url }}/containerd/containerd-{{ containerd_version }}-linux-amd64.tar.gz"
+runc_binary_url: "{{ artifacts_base_url }}/runc/runc.amd64-{{ runc_version }}"
+cni_plugins_tarball_url: "{{ artifacts_base_url }}/cni-plugins/cni-plugins-linux-amd64-v{{ cni_plugins_version }}.tgz"
+helm_tarball_url: "{{ artifacts_base_url }}/helm/helm-v{{ helm_version }}-linux-amd64.tar.gz"
+
+# -----------------------------------------------------------------------------
+# CNI
+# -----------------------------------------------------------------------------
+cni:
+  name: cilium
+  version: ~ # "1.16.5"
+  # oci  — чарт из Harbor: helm template <name> oci://.../cilium --version X
+  # repo — классический repo: helm template <name> cilium --repo <url> --version X
+  # Обе формы взаимоисключающие; смешивание `cilium/cilium` с `--repo` — ошибка (B3).
+  chart_source: oci
+  chart_name: cilium
+  chart_oci: "oci://{{ registry_host }}/charts/cilium"
+  chart_repo: "https://helm.cilium.io/"
+
+# -----------------------------------------------------------------------------
+# GitOps и Argo CD
+# -----------------------------------------------------------------------------
+gitops:
+  repo_url: "ssh://git@gitlab.company.local/platform/kubernetes-gitops.git"
+  revision: main
+  cluster_path: "clusters/{{ cluster_name }}"
+  # Хост для known_hosts; получить: ssh-keyscan gitlab.company.local
+  ssh_host: "gitlab.company.local"
+  ssh_port: 22
+
+argocd:
+  version: ~ # версия Helm-чарта argo-cd, напр. "7.7.11"
+  namespace: argocd
+  chart_source: oci
+  chart_name: argo-cd
+  chart_oci: "oci://{{ registry_host }}/charts/argo-cd"
+  chart_repo: "https://argoproj.github.io/argo-helm"
+  # Field manager, которым Argo CD выполняет Server-Side Apply. Bootstrap
+  # применяет манифесты тем же менеджером, чтобы takeover прошёл без конфликтов.
+  # Сверить с целевой версией: kubectl get <res> -o yaml | grep -A2 managedFields
+  field_manager: argocd-controller
+  # Автоматика на root Application при bootstrap НЕ включается (S9).
+  root_app_automated: false
+
+# -----------------------------------------------------------------------------
+# Секреты
+# -----------------------------------------------------------------------------
+# openbao    — community.hashi_vault lookup (production)
+# vault_file — ansible-vault файл (локальная разработка, molecule)
+secret_backend: openbao
+
+openbao_url: "https://openbao.company.local"
+openbao_mount_point: "kv"
+openbao_cluster_path: "kubernetes/{{ cluster_name }}"
+# Путь к ansible-vault файлу при secret_backend=vault_file
+vault_file_path: "{{ inventory_dir }}/secrets.vault.yml"
+
+# -----------------------------------------------------------------------------
+# Шифрование Secrets в etcd
+#
+# secretbox — рекомендуемый дефолт (XSalsa20-Poly1305).
+# aescbc    — оставлен для совместимости, но CBC уязвим к padding oracle (S5).
+# kms       — предпочтителен при наличии KMS v2 плагина для OpenBao.
+# -----------------------------------------------------------------------------
+etcd_encryption_provider: secretbox # secretbox | aescbc | kms
+etcd_encryption_resources:
+  - secrets
+etcd_kms_name: openbao
+etcd_kms_endpoint: "unix:///var/run/kmsplugin/socket.sock"
+etcd_kms_timeout: "3s"
+
+# -----------------------------------------------------------------------------
+# Аудит apiserver
+# -----------------------------------------------------------------------------
+audit_log_dir: /var/log/kubernetes/audit
+audit_log_max_age: 30
+audit_log_max_backup: 10
+audit_log_max_size: 100
+
+# -----------------------------------------------------------------------------
+# Pod Security Admission (S15)
+#
+# Закрывает окно между kubeadm init и установкой policy engine в wave 0.
+# -----------------------------------------------------------------------------
+pod_security_admission_enabled: true
+pod_security_admission_enforce: baseline
+pod_security_admission_enforce_version: latest
+pod_security_admission_audit: restricted
+pod_security_admission_warn: restricted
+pod_security_admission_exempt_namespaces:
+  - kube-system
+
+# -----------------------------------------------------------------------------
+# TLS-политика (S16)
+#
+# Флаг cipher-suites не применяется к TLS 1.3 — там набор фиксирован стандартом.
+# -----------------------------------------------------------------------------
+tls_min_version: VersionTLS12
+tls_cipher_suites:
+  - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+  - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+  - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+  - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+
+# -----------------------------------------------------------------------------
+# kubelet
+# -----------------------------------------------------------------------------
+# Стартовые значения. Уточняются по фактическому потреблению системных
+# компонентов на целевых размерах узлов (раздел 14.2 playbook).
+kubelet_system_reserved:
+  cpu: "500m"
+  memory: "1Gi"
+  ephemeral-storage: "5Gi"
+kubelet_kube_reserved:
+  cpu: "500m"
+  memory: "1Gi"
+  ephemeral-storage: "5Gi"
+
+# evictionHard заменяет карту дефолтов ЦЕЛИКОМ, поэтому nodefs.inodesFree
+# обязан присутствовать явно — иначе исчерпание inode перестанет вытеснять
+# Pod'ы (S11).
+kubelet_eviction_hard:
+  memory.available: "500Mi"
+  nodefs.available: "10%"
+  nodefs.inodesFree: "5%"
+  imagefs.available: "15%"
+
+# -----------------------------------------------------------------------------
+# Время
+# -----------------------------------------------------------------------------
+ntp_servers:
+  - "ntp1.company.local"
+  - "ntp2.company.local"
+ntp_max_offset_seconds: 1
+
+# -----------------------------------------------------------------------------
+# Прочее
+# -----------------------------------------------------------------------------
+kubeconfig_path: /etc/kubernetes/admin.conf
+
+# Корневые CA организации: пути к PEM-файлам на управляющей машине.
+os_root_ca_certificates: []
+
+# Управление firewall выключено по умолчанию: в закрытых контурах фильтрация
+# обычно вынесена на сетевое оборудование. Включать осознанно.
+firewall_manage: false
+
+# Прокси для доступа наружу. В закрытом контуре остаётся пустым.
+os_http_proxy: ""
+os_https_proxy: ""
+os_no_proxy: "localhost,127.0.0.1,.company.local,{{ pod_network_cidr }},{{ service_network_cidr }}"

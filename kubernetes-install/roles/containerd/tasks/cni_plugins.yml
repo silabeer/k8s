@@ -1,0 +1,61 @@
+---
+# Cilium приносит собственный CNI-плагин, но базовые плагины всё равно нужны:
+# containerd использует loopback для сетевого namespace каждого sandbox.
+
+- name: Create CNI directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ containerd_cni_bin_dir }}"
+    - "{{ containerd_cni_conf_dir }}"
+
+- name: Check installed CNI plugins version
+  ansible.builtin.stat:
+    path: "{{ containerd_cni_bin_dir }}/.version-{{ cni_plugins_version }}"
+  register: containerd_cni_version_marker
+
+- name: Install CNI plugins
+  when: not containerd_cni_version_marker.stat.exists
+  block:
+    - name: Create temporary download directory for CNI plugins
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: cni
+      register: containerd_cni_tmp
+
+    - name: Download CNI plugins tarball
+      ansible.builtin.get_url:
+        url: "{{ cni_plugins_tarball_url }}"
+        dest: "{{ containerd_cni_tmp.path }}/cni-plugins.tgz"
+        mode: "0644"
+      register: containerd_cni_download
+      retries: 3
+      delay: 5
+      until: containerd_cni_download is succeeded
+
+    - name: Unpack CNI plugins
+      ansible.builtin.unarchive:
+        src: "{{ containerd_cni_tmp.path }}/cni-plugins.tgz"
+        dest: "{{ containerd_cni_bin_dir }}"
+        remote_src: true
+        extra_opts:
+          - --no-same-owner
+
+    - name: Write CNI plugins version marker
+      ansible.builtin.file:
+        path: "{{ containerd_cni_bin_dir }}/.version-{{ cni_plugins_version }}"
+        state: touch
+        owner: root
+        group: root
+        mode: "0644"
+
+  always:
+    - name: Remove temporary CNI download directory
+      ansible.builtin.file:
+        path: "{{ containerd_cni_tmp.path }}"
+        state: absent
+      when: containerd_cni_tmp.path is defined

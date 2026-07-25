@@ -1,0 +1,100 @@
+---
+- name: Assert the chart source is known
+  ansible.builtin.assert:
+    that:
+      - argocd.chart_source in ['oci', 'repo']
+    fail_msg: "argocd.chart_source должен быть oci или repo."
+    quiet: true
+
+- name: Build the chart reference
+  # Та же взаимоисключающая пара форм, что и для Cilium (B3):
+  # с --repo имя чарта указывается без префикса репозитория.
+  ansible.builtin.set_fact:
+    argocd_chart_ref: >-
+      {{ argocd.chart_oci if argocd.chart_source == 'oci' else argocd.chart_name }}
+    argocd_repo_args: >-
+      {{ [] if argocd.chart_source == 'oci' else ['--repo', argocd.chart_repo] }}
+
+- name: Create the argocd namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ argocd.namespace }}"
+        labels:
+          # kube-system выведен из-под PSA, а argocd — нет: компоненты
+          # Argo CD проходят restricted.
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/audit: restricted
+          pod-security.kubernetes.io/warn: restricted
+
+- name: Create the bootstrap manifest directory
+  ansible.builtin.file:
+    path: "{{ argocd_manifest_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# helm template, а не helm install: takeover самим Argo CD (wave -20) должен
+# пройти без осиротевшего helm release (раздел 18.1).
+- name: Render the Argo CD chart
+  ansible.builtin.command:
+    argv: >-
+      {{ ['helm', 'template', argocd_release_name, argocd_chart_ref]
+         + argocd_repo_args
+         + ['--version', argocd.version,
+            '--namespace', argocd.namespace,
+            '--include-crds',
+            '--values', argocd_values_path] }}
+  register: argocd_rendered
+  changed_when: false
+
+- name: Write the rendered manifest
+  ansible.builtin.copy:
+    content: "{{ argocd_rendered.stdout }}"
+    dest: "{{ argocd_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Assert the rendered manifest contains the CRDs
+  ansible.builtin.assert:
+    that:
+      - argocd_rendered.stdout is search('kind:\s*CustomResourceDefinition')
+      - argocd_rendered.stdout is search('applications\.argoproj\.io')
+    fail_msg: >-
+      В рендере отсутствуют CRD Argo CD. Без --include-crds последующее
+      применение root Application упадёт на неизвестном типе Application.
+    quiet: true
+
+# --server-side обязателен: CRD Argo CD превышают лимит в 262144 байта на
+# аннотацию kubectl.kubernetes.io/last-applied-configuration, и клиентский
+# apply на них падает.
+- name: Apply the Argo CD manifest
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - --server-side
+      - --force-conflicts
+      - --field-manager={{ argocd_field_manager }}
+      - -f
+      - "{{ argocd_manifest_path }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: argocd_apply
+  changed_when: "'configured' in argocd_apply.stdout or 'created' in argocd_apply.stdout"
+
+- name: Assert no helm release secret was created
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ argocd.namespace }}"
+    label_selectors:
+      - "owner=helm"
+  register: argocd_helm_secrets
+  failed_when: argocd_helm_secrets.resources | length > 0

@@ -1,0 +1,35 @@
+---
+- name: Check for the kubelet kubeconfig
+  ansible.builtin.stat:
+    path: "{{ node_join_kubelet_conf }}"
+  register: node_join_kubelet_conf_stat
+
+- name: Check whether the node object exists in the cluster
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Node
+    name: "{{ inventory_hostname }}"
+  delegate_to: "{{ groups['control_plane'] | first }}"
+  register: node_join_node_object
+  failed_when: false
+
+- name: Decide whether the join is needed
+  ansible.builtin.set_fact:
+    node_join_already_done: >-
+      {{ node_join_kubelet_conf_stat.stat.exists
+         and (node_join_node_object.resources | default([]) | length > 0) }}
+
+# Расхождение признаков означает половинчатое состояние: либо узел был удалён
+# из кластера без reset, либо join оборвался. Повторный join на такой узел
+# упадёт на существующих файлах.
+- name: Fail on a partially joined node
+  ansible.builtin.fail:
+    msg: >-
+      Узел в промежуточном состоянии: kubelet.conf
+      {{ 'есть' if node_join_kubelet_conf_stat.stat.exists else 'отсутствует' }},
+      объект Node в кластере
+      {{ 'есть' if (node_join_node_object.resources | default([]) | length > 0) else 'отсутствует' }}.
+      Выполните `kubeadm reset --force` на узле перед повторным join.
+  when:
+    - not node_join_already_done | bool
+    - node_join_kubelet_conf_stat.stat.exists

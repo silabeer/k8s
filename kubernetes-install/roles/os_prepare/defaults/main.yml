@@ -1,0 +1,45 @@
+---
+# conntrack, socat, ethtool — требования kubeadm preflight.
+# iptables нужен kube-proxy, nfs-common и open-iscsi — распространённым CSI.
+os_prepare_base_packages:
+  - apt-transport-https
+  - ca-certificates
+  - chrony
+  - conntrack
+  - curl
+  - ethtool
+  - gnupg
+  - ipset
+  - iptables
+  - jq
+  - nfs-common
+  - open-iscsi
+  - socat
+  - tar
+
+os_prepare_manage_hostname: true
+os_prepare_manage_hosts: true
+os_prepare_manage_ntp: true
+os_prepare_manage_swap: true
+os_prepare_manage_logrotate: true
+os_prepare_manage_journald: true
+os_prepare_manage_ca: true
+os_prepare_manage_proxy: true
+
+# Ограничение размера журнала: на узле с активными Pod journald по умолчанию
+# способен занять весь /var и уронить kubelet по disk pressure.
+os_prepare_journald_max_use: "2G"
+os_prepare_journald_max_file_size: "128M"
+
+# Диск etcd. Значения по умолчанию безопасны: на не-control-plane узлах
+# блок пропускается целиком.
+etcd_disk_manage: false
+etcd_disk_device: ~
+etcd_disk_mountpoint: /var/lib/etcd
+etcd_disk_filesystem: ext4
+etcd_disk_mount_opts: "defaults,noatime"
+
+# Firewall выключен по умолчанию: в закрытом контуре фильтрация обычно
+# вынесена на сетевое оборудование, а неаккуратный ufw ломает Cilium.
+firewall_manage: false
+os_prepare_firewall_extra_ports: []

@@ -1,0 +1,53 @@
+---
+# helm нужен ролям cilium_bootstrap и argocd_bootstrap для `helm template`.
+# Ставится только на узел, выполняющий bootstrap.
+
+- name: Check installed helm version
+  ansible.builtin.command:
+    cmd: "{{ kubernetes_packages_helm_bin_dir }}/helm version --short"
+  register: kubernetes_packages_helm_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install helm
+  when: helm_version not in (kubernetes_packages_helm_installed.stdout | default(''))
+  block:
+    - name: Create temporary download directory for helm
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: helm
+      register: kubernetes_packages_helm_tmp
+
+    - name: Download helm tarball
+      ansible.builtin.get_url:
+        url: "{{ helm_tarball_url }}"
+        dest: "{{ kubernetes_packages_helm_tmp.path }}/helm.tar.gz"
+        mode: "0644"
+      register: kubernetes_packages_helm_download
+      retries: 3
+      delay: 5
+      until: kubernetes_packages_helm_download is succeeded
+
+    - name: Unpack helm
+      ansible.builtin.unarchive:
+        src: "{{ kubernetes_packages_helm_tmp.path }}/helm.tar.gz"
+        dest: "{{ kubernetes_packages_helm_tmp.path }}"
+        remote_src: true
+        extra_opts:
+          - --no-same-owner
+
+    - name: Install helm binary
+      ansible.builtin.copy:
+        src: "{{ kubernetes_packages_helm_tmp.path }}/linux-amd64/helm"
+        dest: "{{ kubernetes_packages_helm_bin_dir }}/helm"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+  always:
+    - name: Remove temporary helm directory
+      ansible.builtin.file:
+        path: "{{ kubernetes_packages_helm_tmp.path }}"
+        state: absent
+      when: kubernetes_packages_helm_tmp.path is defined

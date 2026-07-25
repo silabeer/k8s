@@ -1,0 +1,72 @@
+---
+# Все узлы одного кластера должны использовать одинаковую ОС, major-версию
+# ядра и схему дисков (раздел 5.1).
+
+- name: Assert distribution is supported
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution in preflight_supported_distributions
+      - ansible_distribution_version in preflight_supported_distributions[ansible_distribution]
+    fail_msg: >-
+      {{ ansible_distribution }} {{ ansible_distribution_version }} не поддерживается.
+      Разрешено: {{ preflight_supported_distributions }}
+    quiet: true
+
+- name: Assert kernel version is recent enough
+  ansible.builtin.assert:
+    that:
+      - ansible_kernel is version(preflight_min_kernel_version, '>=')
+    fail_msg: >-
+      Ядро {{ ansible_kernel }} старше минимального {{ preflight_min_kernel_version }}.
+    quiet: true
+
+- name: Assert all cluster nodes run the same distribution
+  ansible.builtin.assert:
+    that:
+      - groups['kubernetes']
+        | map('extract', hostvars, 'ansible_distribution_version')
+        | unique | length == 1
+    fail_msg: >-
+      Узлы кластера на разных версиях ОС:
+      {{ groups['kubernetes'] | map('extract', hostvars, 'ansible_distribution_version') | unique | list }}
+    quiet: true
+  run_once: true
+
+- name: Assert all cluster nodes run the same kernel major version
+  vars:
+    kernel_majors: >-
+      {{ groups['kubernetes']
+         | map('extract', hostvars, 'ansible_kernel')
+         | map('regex_replace', '^(\d+\.\d+).*$', '\1')
+         | unique | list }}
+  ansible.builtin.assert:
+    that:
+      - kernel_majors | length == 1
+    fail_msg: "Узлы кластера на разных major-версиях ядра: {{ kernel_majors }}"
+    quiet: true
+  run_once: true
+
+- name: Get root filesystem mount options
+  ansible.builtin.set_fact:
+    preflight_root_mount: >-
+      {{ ansible_mounts | selectattr('mount', 'equalto', '/') | first | default({}) }}
+
+- name: Assert root filesystem is writable
+  ansible.builtin.assert:
+    that:
+      - "'ro' not in (preflight_root_mount.options | default('') | split(','))"
+    fail_msg: "Корневая файловая система смонтирована read-only."
+    quiet: true
+
+- name: Check whether swap is active
+  ansible.builtin.set_fact:
+    preflight_swap_active: "{{ (ansible_swaptotal_mb | default(0)) > 0 }}"
+
+- name: Report active swap
+  ansible.builtin.debug:
+    msg: >-
+      На узле активен swap ({{ ansible_swaptotal_mb }} MB).
+      Он будет отключён ролью os_prepare.
+  when:
+    - preflight_swap_active
+    - inventory_hostname in groups['kubernetes']

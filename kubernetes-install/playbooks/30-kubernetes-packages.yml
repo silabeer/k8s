@@ -1,0 +1,10 @@
+---
+# Этап 30. Установка kubelet, kubeadm, kubectl, cri-tools.
+
+- name: Install Kubernetes packages
+  hosts: kubernetes
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: kubernetes_packages

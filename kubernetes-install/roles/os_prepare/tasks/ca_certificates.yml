@@ -1,0 +1,20 @@
+---
+# Корневые CA организации нужны узлу для доступа к Harbor, GitLab и OpenBao
+# по TLS. containerd берёт их из системного хранилища.
+
+- name: Copy organisation root CA certificates
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/share/ca-certificates/{{ item | basename | regex_replace('\\.(pem|cer)$', '.crt') }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ os_root_ca_certificates }}"
+  register: os_prepare_ca_copied
+
+- name: Update CA trust store  # noqa: no-handler
+  ansible.builtin.command:
+    cmd: update-ca-certificates
+  when: os_prepare_ca_copied is changed
+  changed_when: true
+  notify: Restart containerd if running

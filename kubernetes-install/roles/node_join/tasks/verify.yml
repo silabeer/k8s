@@ -1,0 +1,62 @@
+---
+- name: Get the node object
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Node
+    name: "{{ inventory_hostname }}"
+  delegate_to: "{{ groups['control_plane'] | first }}"
+  register: node_join_verify_node
+  retries: 12
+  delay: 5
+  until: node_join_verify_node.resources | length > 0
+
+- name: Assert the kubelet version matches the target
+  ansible.builtin.assert:
+    that:
+      - node_join_verify_node.resources[0].status.nodeInfo.kubeletVersion
+        is search(kubernetes_version | regex_escape)
+    fail_msg: >-
+      Узел зарегистрирован с kubelet
+      {{ node_join_verify_node.resources[0].status.nodeInfo.kubeletVersion }},
+      ожидается {{ kubernetes_version }}.
+    quiet: true
+
+- name: Assert the node advertises the expected internal address
+  vars:
+    internal_ips: >-
+      {{ node_join_verify_node.resources[0].status.addresses
+         | selectattr('type', 'equalto', 'InternalIP')
+         | map(attribute='address') | list }}
+  ansible.builtin.assert:
+    that:
+      - ansible_host in internal_ips
+    fail_msg: >-
+      InternalIP узла {{ internal_ips }} не совпадает с ansible_host
+      {{ ansible_host }}. Проверьте kubeletExtraArgs node-ip.
+    quiet: true
+
+- name: Assert taints were applied at registration
+  vars:
+    actual_taints: >-
+      {{ node_join_verify_node.resources[0].spec.taints | default([])
+         | map(attribute='key') | list }}
+  ansible.builtin.assert:
+    that:
+      - node_taints | map(attribute='key') | difference(actual_taints) | length == 0
+    fail_msg: >-
+      На узле отсутствуют ожидаемые taints:
+      {{ node_taints | map(attribute='key') | difference(actual_taints) | list }}
+    quiet: true
+  when:
+    - node_join_type == 'worker'
+    - node_taints | default([]) | length > 0
+
+# Узел остаётся NotReady до установки CNI — это ожидаемое состояние
+# (раздел 16), поэтому Ready здесь не проверяется.
+- name: Report node registration
+  ansible.builtin.debug:
+    msg: >-
+      Узел {{ inventory_hostname }} зарегистрирован
+      (состояние: {{ node_join_verify_node.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first }}).
+      NotReady до установки CNI — ожидаемо.

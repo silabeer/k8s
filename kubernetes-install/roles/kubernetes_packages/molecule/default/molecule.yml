@@ -1,0 +1,37 @@
+---
+# Требует доступа к внутреннему apt-зеркалу Kubernetes.
+# В CI адрес задаётся переменной MOLECULE_MIRROR_HOST.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: molecule-k8spkg-cp-01
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs: [/run, /tmp]
+    groups: [kubernetes, control_plane]
+
+provisioner:
+  name: ansible
+  inventory:
+    links:
+      group_vars: ../../../../molecule-shared/group_vars
+    host_vars:
+      molecule-k8spkg-cp-01:
+        ansible_host: 10.99.0.21
+    group_vars:
+      all:
+        # helm тянется с artifact storage — отдельная зависимость,
+        # проверяется в сценариях bootstrap-ролей.
+        kubernetes_packages_install_helm: false
+
+verifier:
+  name: ansible

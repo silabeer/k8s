@@ -1,0 +1,57 @@
+---
+# Одного `creates:` недостаточно (раздел 24): admin.conf появляется и после
+# частично провалившегося init. Проверяем три независимых признака и считаем
+# кластер поднятым только если apiserver реально отвечает.
+
+- name: Check for admin kubeconfig
+  ansible.builtin.stat:
+    path: "{{ control_plane_init_admin_conf }}"
+  register: control_plane_init_admin_stat
+
+- name: Check for the apiserver static pod manifest
+  ansible.builtin.stat:
+    path: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: control_plane_init_manifest_stat
+
+- name: Check for etcd data directory
+  ansible.builtin.stat:
+    path: /var/lib/etcd/member
+  register: control_plane_init_etcd_stat
+
+- name: Probe the API server
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ control_plane_endpoint_port }}/healthz"
+    validate_certs: false
+    status_code: [200, 401, 403]
+    timeout: 5
+  register: control_plane_init_api_probe
+  failed_when: false
+  changed_when: false
+
+- name: Decide whether initialization is needed
+  ansible.builtin.set_fact:
+    control_plane_init_already_done: >-
+      {{ control_plane_init_admin_stat.stat.exists
+         and control_plane_init_manifest_stat.stat.exists
+         and control_plane_init_api_probe.status | default(0) in [200, 401, 403] }}
+
+- name: Describe the detected state
+  ansible.builtin.set_fact:
+    control_plane_init_skip_reason: >-
+      admin.conf={{ control_plane_init_admin_stat.stat.exists }},
+      apiserver manifest={{ control_plane_init_manifest_stat.stat.exists }},
+      etcd data={{ control_plane_init_etcd_stat.stat.exists }},
+      /healthz={{ control_plane_init_api_probe.status | default('нет ответа') }}
+
+# Половинчатое состояние опаснее обоих определённых: kubeadm init на нём
+# упадёт с невнятной ошибкой, а данные etcd могут быть уже записаны.
+- name: Fail on a partially initialized control plane
+  ansible.builtin.fail:
+    msg: >-
+      Узел в промежуточном состоянии: {{ control_plane_init_skip_reason }}.
+      Предыдущий kubeadm init, вероятно, оборвался. Приведите узел в чистое
+      состояние (`kubeadm reset --force` и удаление /var/lib/etcd) либо
+      разберитесь вручную — автоматический повтор init рискует потерей данных.
+  when:
+    - not control_plane_init_already_done | bool
+    - control_plane_init_admin_stat.stat.exists or control_plane_init_etcd_stat.stat.exists

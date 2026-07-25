@@ -1,0 +1,89 @@
+---
+- name: Assert package versions are pinned
+  ansible.builtin.assert:
+    that:
+      - haproxy_package_version is not none
+      - keepalived_package_version is not none
+    fail_msg: >-
+      Версии haproxy и keepalived должны быть закреплены
+      (haproxy_package_version, keepalived_package_version).
+    quiet: true
+
+- name: Resolve secrets
+  ansible.builtin.import_tasks: resolve_secrets.yml
+
+- name: Install haproxy and keepalived
+  ansible.builtin.apt:
+    name:
+      - "haproxy={{ haproxy_package_version }}"
+      - "keepalived={{ keepalived_package_version }}"
+    state: present
+    update_cache: true
+    allow_change_held_packages: true
+
+- name: Hold haproxy and keepalived packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - haproxy
+    - keepalived
+
+- name: Allow binding to a non-local address
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/99-haproxy.conf
+    sysctl_set: true
+    reload: true
+    state: present
+  when: haproxy_ip_nonlocal_bind | bool
+
+- name: Render HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ haproxy_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "haproxy -c -f %s"
+  notify: Reload haproxy
+
+- name: Render keepalived health check script
+  ansible.builtin.template:
+    src: check_haproxy.sh.j2
+    dest: "{{ keepalived_check_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart keepalived
+
+- name: Render keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: "{{ keepalived_config_path }}"
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify: Restart keepalived
+
+- name: Enable and start haproxy
+  ansible.builtin.systemd:
+    name: haproxy
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: haproxy_manage_services | bool
+
+- name: Enable and start keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: haproxy_manage_services | bool
+
+- name: Verify load balancer
+  ansible.builtin.import_tasks: verify.yml
+  when: haproxy_manage_services | bool

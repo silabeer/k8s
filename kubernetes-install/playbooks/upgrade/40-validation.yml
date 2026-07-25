@@ -1,0 +1,53 @@
+---
+# Upgrade, этап 40. Полная валидация после обновления (раздел 23).
+#
+# Отдельно проверяется sandbox_image: новая версия kubeadm может ожидать
+# другой pause, и рассинхронизация проявится только при пересоздании Pod
+# (пункт 10 раздела 27).
+
+- name: Verify pause image alignment
+  hosts: kubernetes
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Get pause image expected by kubeadm
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          kubeadm config images list --kubernetes-version v{{ kubernetes_target_version }}
+          | grep pause
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: expected_pause
+      delegate_to: "{{ groups['control_plane'] | first }}"
+      run_once: true
+
+    - name: Get sandbox image configured in containerd
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          containerd config dump | grep -A2 pinned_images | grep sandbox
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: configured_sandbox
+
+    - name: Assert pause tags match
+      ansible.builtin.assert:
+        that:
+          - expected_pause.stdout | regex_search('pause:([0-9.]+)', '\\1') | first
+            == configured_sandbox.stdout | regex_search('pause:([0-9.]+)', '\\1') | first
+        fail_msg: >-
+          containerd sandbox_image не совпадает с pause, ожидаемым kubeadm.
+          Обновите pause_image_tag и прогоните playbooks/20-containerd.yml.
+
+- name: Full cluster validation
+  hosts: control_plane[0]
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: cluster_validation

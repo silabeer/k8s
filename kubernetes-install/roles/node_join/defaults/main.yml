@@ -1,0 +1,38 @@
+---
+# control-plane | worker
+node_join_type: worker
+
+node_join_config_path: /etc/kubernetes/kubeadm-join.yaml
+node_join_kubelet_conf: /etc/kubernetes/kubelet.conf
+
+# Bootstrap token не хранится постоянно (раздел 26): создаётся под конкретный
+# join с коротким TTL и отзывается сразу после.
+node_join_token_ttl: 30m
+node_join_revoke_token: true
+
+node_join_pool: "{{ node_pool | default('general') }}"
+
+# =============================================================================
+# Labels, назначаемые kubelet при регистрации (B2).
+#
+# Сюда попадают ТОЛЬКО бездоменные labels. Admission-плагин NodeRestriction
+# запрещает kubelet выставлять labels в домене kubernetes.io вне короткого
+# whitelist, и `--node-labels=node-role.kubernetes.io/worker=` приводит к
+# отказу регистрации:
+#   is forbidden: node "..." is not allowed to modify labels:
+#   node-role.kubernetes.io/worker
+#
+# Роль узла назначается отдельной задачей от имени admin-контекста
+# (assign_labels.yml).
+# =============================================================================
+node_join_kubelet_labels:
+  node-pool: "{{ node_join_pool }}"
+
+# Labels, назначаемые после join от имени cluster-admin
+node_join_post_labels:
+  worker:
+    node-role.kubernetes.io/worker: ""
+  control-plane: {}
+
+node_join_readyz_retries: 60
+node_join_readyz_delay: 5

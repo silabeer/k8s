@@ -1,0 +1,24 @@
+---
+# Вынесено в отдельный task-файл: playbook ротации ключа
+# (playbooks/maintenance/rotate-etcd-encryption-key.yml) переиспользует его,
+# подставляя собственный порядок ключей в kubeadm_encryption_keys.
+
+- name: Build the default key list when rotation is not in progress
+  ansible.builtin.set_fact:
+    etcd_encryption_keys:
+      - name: "{{ etcd_encryption_key_name }}"
+        secret: "{{ etcd_encryption_key }}"
+  when:
+    - etcd_encryption_keys is not defined
+    - etcd_encryption_provider != 'kms'
+  no_log: true
+
+- name: Render encryption configuration
+  ansible.builtin.template:
+    src: encryption-config.yaml.j2
+    dest: "{{ kubeadm_encryption_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  register: kubeadm_encryption_config
+  no_log: true

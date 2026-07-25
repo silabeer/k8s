@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Модули ядра, требуемые Kubernetes и container runtime.
+{% for module in kernel_modules %}
+{{ module }}
+{% endfor %}

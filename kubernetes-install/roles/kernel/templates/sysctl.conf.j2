@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+
+# --- Сетевые требования Kubernetes ---
+{% for key, value in kernel_sysctl_networking.items() %}
+{{ key }} = {{ value }}
+{% endfor %}
+
+# --- Обязательные значения для protectKernelDefaults: true ---
+# kubelet при этом флаге НЕ выставляет sysctl, а падает при несовпадении.
+# Проверяются ровно эти шесть значений; kernel.keys.* отличаются от дефолтов
+# Linux (200 и 20000 соответственно).
+{% for key, value in kernel_sysctl_protect_defaults.items() %}
+{{ key }} = {{ value }}
+{% endfor %}
+
+# --- Лимиты, недостаточные по умолчанию для узла с сотнями Pod ---
+{% for key, value in kernel_sysctl_extra.items() %}
+{{ key }} = {{ value }}
+{% endfor %}

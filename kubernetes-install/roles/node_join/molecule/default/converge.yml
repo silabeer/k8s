@@ -1,0 +1,12 @@
+---
+# prepare уже присоединил worker через playbooks/42-workers-join.yml.
+# Converge прогоняет роль повторно: второй запуск не должен выполнять join.
+- name: Converge
+  hosts: workers
+  become: true
+  tasks:
+    - name: Apply the node_join role a second time
+      ansible.builtin.include_role:
+        name: node_join
+      vars:
+        node_join_type: worker

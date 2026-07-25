@@ -1,0 +1,46 @@
+---
+# Запуск служб и проверка VIP требуют NET_ADMIN и реального VRRP — в
+# контейнере невозможны. Уровень 1 проверяет рендер и синтаксис конфигурации,
+# фактический failover покрывается VM-тестом уровня 2.
+haproxy_manage_services: true
+
+haproxy_config_path: /etc/haproxy/haproxy.cfg
+keepalived_config_path: /etc/keepalived/keepalived.conf
+keepalived_check_script_path: /etc/keepalived/check_haproxy.sh
+
+haproxy_frontend_bind: "0.0.0.0"
+haproxy_frontend_port: "{{ control_plane_endpoint_port }}"
+
+haproxy_stats_enabled: true
+haproxy_stats_port: 8404
+haproxy_stats_bind: "127.0.0.1"
+
+# Проверка backend по HTTP /readyz, а не голым TCP (S6): TCP-проверка отдаёт
+# трафик apiserver'у, который слушает порт, но ещё не готов обслуживать
+# запросы — например, во время восстановления etcd.
+#
+# /readyz, а не /healthz: последний для целей балансировки считается
+# устаревшим и не отражает готовность принимать трафик.
+haproxy_check_path: /readyz
+haproxy_check_interval: "3s"
+haproxy_check_fall: 2
+haproxy_check_rise: 3
+
+haproxy_timeout_connect: "10s"
+haproxy_timeout_client: "4h"
+haproxy_timeout_server: "4h"
+
+# ip_nonlocal_bind нужен, только если HAProxy биндится непосредственно на VIP.
+# В конфигурации по умолчанию он слушает 0.0.0.0, поэтому выключено.
+haproxy_ip_nonlocal_bind: false
+
+keepalived_virtual_router_id: 51
+keepalived_advert_int: 1
+keepalived_auth_type: PASS
+keepalived_check_interval: 2
+keepalived_check_weight: -20
+keepalived_check_fall: 2
+keepalived_check_rise: 2
+
+# Пароль VRRP берётся из секрет-бэкенда, а не из inventory.
+keepalived_auth_pass_secret_key: keepalived-auth-pass

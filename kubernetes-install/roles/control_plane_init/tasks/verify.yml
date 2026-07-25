@@ -1,0 +1,85 @@
+---
+- name: Check readyz with details
+  ansible.builtin.command:
+    cmd: "kubectl get --raw=/readyz?verbose"
+  environment:
+    KUBECONFIG: "{{ control_plane_init_admin_conf }}"
+  register: control_plane_init_readyz_verbose
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: control_plane_init_readyz_verbose.rc == 0
+
+- name: List control plane static pods
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ control_plane_init_admin_conf }}"
+    kind: Pod
+    namespace: kube-system
+    label_selectors:
+      - "tier=control-plane"
+  register: control_plane_init_static_pods
+
+- name: Assert every control plane component is running
+  vars:
+    components: [kube-apiserver, kube-controller-manager, kube-scheduler, etcd]
+    running: >-
+      {{ control_plane_init_static_pods.resources
+         | selectattr('status.phase', 'equalto', 'Running')
+         | map(attribute='metadata.labels.component') | list }}
+  ansible.builtin.assert:
+    that:
+      - components | difference(running) | length == 0
+    fail_msg: >-
+      Не запущены компоненты control plane: {{ components | difference(running) }}.
+      Диагностика: crictl ps -a, journalctl -u kubelet.
+    quiet: true
+
+# Проверяем, что apiserver реально получил флаги безопасности: ошибка в
+# extraArgs приводит к тому, что kubeadm молча стартует apiserver без них,
+# и Secrets окажутся в etcd открытым текстом.
+- name: Read the apiserver static pod manifest
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: control_plane_init_apiserver_manifest
+
+- name: Assert security flags are present on the apiserver
+  vars:
+    manifest: "{{ control_plane_init_apiserver_manifest.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - manifest is search('--encryption-provider-config=' ~ (kubeadm_encryption_config_path | regex_escape))
+      - manifest is search('--audit-policy-file=' ~ (kubeadm_audit_policy_path | regex_escape))
+      - manifest is search('--audit-log-path=')
+      - manifest is search('--tls-min-version=' ~ tls_min_version)
+    fail_msg: >-
+      В манифесте kube-apiserver отсутствуют флаги безопасности.
+      Проверьте apiServer.extraArgs в {{ control_plane_init_config_path }}.
+    quiet: true
+
+- name: Assert the admission control config is wired up
+  vars:
+    manifest: "{{ control_plane_init_apiserver_manifest.content | b64decode }}"
+  ansible.builtin.assert:
+    that:
+      - manifest is search('--admission-control-config-file=' ~ (kubeadm_admission_config_path | regex_escape))
+    fail_msg: "Pod Security Admission включён в переменных, но не попал в манифест apiserver."
+    quiet: true
+  when: pod_security_admission_enabled | bool
+
+- name: Wait for the audit log to be created
+  ansible.builtin.wait_for:
+    path: "{{ audit_log_dir }}/audit.log"
+    state: present
+    timeout: 60
+
+- name: Assert the audit log is not empty
+  ansible.builtin.stat:
+    path: "{{ audit_log_dir }}/audit.log"
+  register: control_plane_init_audit_stat
+  failed_when: control_plane_init_audit_stat.stat.size | default(0) == 0
+
+- name: Report control plane state
+  ansible.builtin.debug:
+    msg: >-
+      Control plane инициализирован. Узлы остаются NotReady до установки CNI —
+      это ожидаемое состояние (раздел 16).

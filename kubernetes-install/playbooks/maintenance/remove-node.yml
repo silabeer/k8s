@@ -1,0 +1,113 @@
+---
+# Вывод узла из кластера.
+#
+#   ansible-playbook playbooks/maintenance/remove-node.yml -e node_to_remove=k8s-worker-04
+#
+# Для control-plane узла дополнительно удаляется member etcd — без этого
+# кластер потеряет кворум при следующем перезапуске.
+
+- name: Drain and remove node from cluster
+  hosts: control_plane[0]
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+
+  pre_tasks:
+    - name: Require node_to_remove
+      ansible.builtin.assert:
+        that:
+          - node_to_remove is defined
+          - node_to_remove in groups['kubernetes']
+        fail_msg: "Укажите -e node_to_remove=<hostname из inventory>"
+
+    - name: Refuse to remove the bootstrap control-plane node
+      ansible.builtin.assert:
+        that:
+          - node_to_remove != (groups['control_plane'] | first)
+        fail_msg: >-
+          Первый control-plane узел выводится отдельной процедурой: сначала
+          назначается новый «первый» в inventory, затем удаляется этот.
+
+  tasks:
+    - name: Cordon and drain the node
+      ansible.builtin.command:
+        cmd: >-
+          kubectl drain {{ node_to_remove }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --timeout=600s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: true
+
+    - name: Remove etcd member for control-plane node
+      when: node_to_remove in groups['control_plane']
+      block:
+        - name: Get etcd member list
+          ansible.builtin.command:
+            cmd: >-
+              kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
+              etcdctl
+              --cacert=/etc/kubernetes/pki/etcd/ca.crt
+              --cert=/etc/kubernetes/pki/etcd/server.crt
+              --key=/etc/kubernetes/pki/etcd/server.key
+              member list -w json
+          environment:
+            KUBECONFIG: "{{ kubeconfig_path }}"
+          register: etcd_members
+          changed_when: false
+
+        - name: Extract member id of the node being removed
+          ansible.builtin.set_fact:
+            etcd_member_id: >-
+              {{ (etcd_members.stdout | from_json).members
+                 | selectattr('name', 'equalto', node_to_remove)
+                 | map(attribute='ID') | first | default('') }}
+
+        - name: Remove etcd member
+          ansible.builtin.command:
+            cmd: >-
+              kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
+              etcdctl
+              --cacert=/etc/kubernetes/pki/etcd/ca.crt
+              --cert=/etc/kubernetes/pki/etcd/server.crt
+              --key=/etc/kubernetes/pki/etcd/server.key
+              member remove {{ '%x' | format(etcd_member_id | int) }}
+          environment:
+            KUBECONFIG: "{{ kubeconfig_path }}"
+          when: etcd_member_id | length > 0
+          changed_when: true
+
+    - name: Delete the node object
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: absent
+        kind: Node
+        name: "{{ node_to_remove }}"
+
+- name: Reset kubeadm state on the removed node
+  # default нужен для syntax-check без extra vars; фактическое отсутствие
+  # переменной уже поймано assert в первом play.
+  hosts: "{{ node_to_remove | default('nonexistent-host') }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Run kubeadm reset
+      ansible.builtin.command:
+        cmd: kubeadm reset --force
+      changed_when: true
+
+    - name: Remove leftover CNI configuration
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/cni/net.d
+        - /var/lib/cni
+
+    - name: Remind about inventory cleanup
+      ansible.builtin.debug:
+        msg: >-
+          Узел {{ node_to_remove }} выведен. Удалите его из inventory и,
+          если он был control-plane, обновите backend HAProxy на LB-узлах
+          (playbooks/05-load-balancer.yml).

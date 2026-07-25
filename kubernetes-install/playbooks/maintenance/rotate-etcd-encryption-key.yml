@@ -1,0 +1,148 @@
+---
+# Ротация ключа шифрования Secrets в etcd (B4).
+#
+# В документе v2.0 процедура была описана как «добавить key2 -> рестарт ->
+# перешифровать -> удалить key1». В HA-кластере это ломает расшифровку: пока
+# не все apiserver знают новый ключ, часть запросов к Secrets падает.
+#
+# Корректная последовательность — четыре фазы, каждая запускается отдельно
+# и только после проверки предыдущей:
+#
+#   Фаза 1. Новый ключ добавляется ВТОРЫМ провайдером на всех узлах.
+#           Пишем старым, читать умеем оба. Рестарт всех apiserver.
+#   Фаза 2. Новый ключ переставляется ПЕРВЫМ на всех узлах.
+#           Пишем новым, старый ещё читается. Рестарт всех apiserver.
+#   Фаза 3. Перешифровка существующих Secrets (однократно).
+#   Фаза 4. Старый ключ удаляется. Рестарт всех apiserver.
+#
+# Запуск:
+#   ansible-playbook playbooks/maintenance/rotate-etcd-encryption-key.yml -e rotation_phase=1
+#   ... проверить kubectl get secrets -A, затем phase=2, и так далее.
+#
+# Новый ключ должен быть заранее положен в OpenBao по пути
+# <openbao_cluster_path>/etcd-encryption-key-next.
+# Сгенерировать: head -c 32 /dev/urandom | base64
+#
+# ВАЖНО: до завершения фазы 4 сохраняются ОБА ключа. Снимок etcd, снятый
+# между фазами, требует для восстановления оба ключа (раздел 28.2).
+
+- name: Rotate etcd encryption key
+  hosts: control_plane
+  serial: 1
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+
+  vars:
+    etcd_encryption_key_name: key1
+    etcd_encryption_key_next_name: key2
+
+  pre_tasks:
+    - name: Validate rotation phase
+      ansible.builtin.assert:
+        that:
+          - rotation_phase is defined
+          - rotation_phase | int in [1, 2, 3, 4]
+        fail_msg: >-
+          Укажите фазу: -e rotation_phase=1|2|3|4.
+          Фазы выполняются строго по порядку, с проверкой между ними.
+      run_once: true
+
+    - name: Resolve secrets
+      ansible.builtin.include_role:
+        name: kubeadm_config
+        tasks_from: resolve_secrets
+
+    - name: Require the next encryption key for phases 1-3
+      ansible.builtin.assert:
+        that:
+          - etcd_encryption_key_next is defined
+          - etcd_encryption_key_next | length > 0
+        fail_msg: >-
+          Новый ключ не найден в секрет-бэкенде по пути
+          {{ openbao_cluster_path }}/etcd-encryption-key-next
+      when: rotation_phase | int < 4
+      no_log: true
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # Фазы 1, 2, 4 — перерендер encryption-config с нужным порядком ключей
+    # -------------------------------------------------------------------------
+    - name: Build provider key order for this phase
+      ansible.builtin.set_fact:
+        etcd_encryption_keys: >-
+          {{
+            {
+              '1': [{'name': etcd_encryption_key_name, 'secret': etcd_encryption_key},
+                    {'name': etcd_encryption_key_next_name, 'secret': etcd_encryption_key_next}],
+              '2': [{'name': etcd_encryption_key_next_name, 'secret': etcd_encryption_key_next},
+                    {'name': etcd_encryption_key_name, 'secret': etcd_encryption_key}],
+              '4': [{'name': etcd_encryption_key_next_name, 'secret': etcd_encryption_key_next}]
+            }[rotation_phase | string]
+          }}
+      when: rotation_phase | int in [1, 2, 4]
+      no_log: true
+
+    # Шаблон encryption-config принадлежит роли kubeadm_config; вызываем её
+    # task-файл, чтобы поиск шаблона шёл по путям роли.
+    - name: Render encryption configuration
+      ansible.builtin.include_role:
+        name: kubeadm_config
+        tasks_from: encryption_config
+      when: rotation_phase | int in [1, 2, 4]
+
+    - name: Restart static pods after encryption config change
+      ansible.builtin.include_tasks: tasks/restart-static-pods.yml
+      when:
+        - rotation_phase | int in [1, 2, 4]
+        - kubeadm_encryption_config is changed
+
+    - name: Wait for API server to become ready
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:6443/readyz"
+        validate_certs: false
+        status_code: 200
+      register: readyz
+      retries: 30
+      delay: 10
+      until: readyz.status == 200
+      when: rotation_phase | int in [1, 2, 4]
+
+    # -------------------------------------------------------------------------
+    # Фаза 3 — перешифровка. Выполняется один раз, после того как ВСЕ apiserver
+    # прошли фазу 2 и пишут новым ключом.
+    # -------------------------------------------------------------------------
+    - name: Re-encrypt all secrets with the new key
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          kubectl get secrets --all-namespaces -o json
+          | kubectl replace -f -
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: reencrypt
+      changed_when: true
+      run_once: true
+      when: rotation_phase | int == 3
+
+    - name: Report re-encryption result
+      ansible.builtin.debug:
+        msg: >-
+          Перешифровано объектов: {{ reencrypt.stdout_lines | length }}.
+          Проверьте выборочно через etcdctl, что префикс сменился на
+          k8s:enc:{{ etcd_encryption_provider }}:v1:{{ etcd_encryption_key_next_name }}:
+          затем запускайте фазу 4.
+      run_once: true
+      when: rotation_phase | int == 3
+
+    - name: Remind to update the primary key in the secret backend
+      ansible.builtin.debug:
+        msg: >-
+          Ротация завершена. Обновите секрет-бэкенд: значение
+          etcd-encryption-key-next должно стать etcd-encryption-key,
+          а etcd-encryption-key-next — удалено. Без этого следующий прогон
+          40-control-plane-init.yml перерендерит конфигурацию со старым ключом.
+      run_once: true
+      when: rotation_phase | int == 4

@@ -1,0 +1,89 @@
+---
+# Upgrade, этап 00. Проверки перед обновлением (раздел 27).
+#
+#   ansible-playbook playbooks/upgrade/00-preflight.yml \
+#     -e kubernetes_target_version=1.32.1 -e kubernetes_target_apt_version=1.32.1-1.1
+
+- name: Upgrade preflight
+  hosts: kubernetes
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Require target version
+      ansible.builtin.assert:
+        that:
+          - kubernetes_target_version is defined
+          - kubernetes_target_apt_version is defined
+        fail_msg: "Укажите -e kubernetes_target_version=... -e kubernetes_target_apt_version=..."
+      run_once: true
+
+    # Minor-версии Kubernetes нельзя пропускать: kubeadm откажется, но лучше
+    # поймать это до снятия snapshot.
+    - name: Refuse to skip minor versions
+      ansible.builtin.assert:
+        that:
+          - (kubernetes_target_version.split('.')[0] | int) == (kubernetes_version.split('.')[0] | int)
+          - (kubernetes_target_version.split('.')[1] | int) - (kubernetes_version.split('.')[1] | int) <= 1
+          - (kubernetes_target_version.split('.')[1] | int) >= (kubernetes_version.split('.')[1] | int)
+        fail_msg: >-
+          Переход {{ kubernetes_version }} -> {{ kubernetes_target_version }} пропускает
+          minor-версию. Обновляйтесь последовательно.
+      run_once: true
+
+    - name: Confirm compatibility matrix has been checked
+      ansible.builtin.assert:
+        that:
+          - compatibility_matrix_verified | default(false) | bool
+        fail_msg: >-
+          Сверьте compatibility matrix Kubernetes <-> containerd <-> Cilium <-> Argo CD
+          и подтвердите: -e compatibility_matrix_verified=true
+      run_once: true
+
+    - name: Check kubelet version drift across nodes
+      ansible.builtin.command:
+        cmd: kubelet --version
+      changed_when: false
+      register: kubelet_versions
+
+    - name: Assert all nodes are on the same version
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts
+            | map('extract', hostvars, ['kubelet_versions', 'stdout'])
+            | unique | length == 1
+        fail_msg: "Узлы кластера на разных версиях kubelet — сначала выровняйте."
+      run_once: true
+
+- name: Snapshot etcd before upgrade
+  hosts: control_plane[0]
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Take etcd snapshot
+      ansible.builtin.include_role:
+        name: etcd_backup
+        tasks_from: snapshot_once
+
+    - name: Check PodDisruptionBudgets that could block drain
+      ansible.builtin.command:
+        cmd: kubectl get pdb --all-namespaces -o json
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+      register: pdb_raw
+
+    - name: Warn about PDBs with zero allowed disruptions
+      ansible.builtin.debug:
+        msg: >-
+          PDB с disruptionsAllowed=0 заблокируют drain worker-узлов:
+          {{ blocking | map(attribute='metadata.name') | list }}
+      vars:
+        blocking: >-
+          {{ (pdb_raw.stdout | from_json)['items']
+             | selectattr('status.disruptionsAllowed', 'defined')
+             | selectattr('status.disruptionsAllowed', 'equalto', 0) | list }}
+      when: blocking | length > 0

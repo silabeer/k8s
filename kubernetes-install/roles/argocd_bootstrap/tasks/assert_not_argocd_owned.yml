@@ -1,0 +1,18 @@
+---
+# Takeover-guard, тот же принцип, что и в cilium_bootstrap (раздел 3.3 spec).
+
+- name: Look for the Argo CD Application managing Argo CD itself
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ argocd.namespace }}"
+    name: "{{ argocd_self_application }}"
+  register: argocd_self_app
+  failed_when: false
+
+- name: Determine whether Argo CD manages itself
+  ansible.builtin.set_fact:
+    argocd_self_owned: >-
+      {{ (argocd_self_app.resources | default([]) | length > 0)
+         and (argocd_self_app.resources[0].status.sync.status | default('') == 'Synced') }}

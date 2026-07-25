@@ -1,0 +1,42 @@
+---
+# В containerd 2.x зеркала задаются ТОЛЬКО через config_path и hosts.toml —
+# секция [plugins.*.registry.mirrors] внутри config.toml удалена (раздел 12).
+
+- name: Create per-registry directories
+  ansible.builtin.file:
+    path: "{{ containerd_certs_dir }}/{{ item.upstream }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ registry_mirrors }}"
+  loop_control:
+    label: "{{ item.upstream }}"
+
+- name: Render hosts.toml for each registry
+  ansible.builtin.template:
+    src: hosts.toml.j2
+    dest: "{{ containerd_certs_dir }}/{{ item.upstream }}/hosts.toml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ registry_mirrors }}"
+  loop_control:
+    label: "{{ item.upstream }}"
+  notify: Restart containerd
+
+- name: Find unmanaged registry directories
+  ansible.builtin.find:
+    paths: "{{ containerd_certs_dir }}"
+    file_type: directory
+  register: containerd_existing_registries
+
+- name: Remove registry configuration no longer present in inventory
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ containerd_existing_registries.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in (registry_mirrors | map(attribute='upstream') | list)
+  notify: Restart containerd

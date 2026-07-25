@@ -1,0 +1,15 @@
+# {{ ansible_managed }}
+# Зеркало для {{ item.upstream }}.
+server = "https://{{ item.upstream }}"
+
+[host."{{ item.host }}"]
+  capabilities = [{{ item.capabilities | map('regex_replace', '^(.*)$', '"\\1"') | join(', ') }}]
+{% if item.override_path | default(false) %}
+  override_path = true
+{% endif %}
+{% if item.skip_verify | default(false) %}
+  skip_verify = true
+{% endif %}
+{% if item.ca | default(false) %}
+  ca = "{{ item.ca }}"
+{% endif %}

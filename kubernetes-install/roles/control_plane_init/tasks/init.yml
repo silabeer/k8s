@@ -1,0 +1,55 @@
+---
+- name: Assert the kubeadm configuration is present
+  ansible.builtin.stat:
+    path: "{{ control_plane_init_config_path }}"
+  register: control_plane_init_config_stat
+  failed_when: not control_plane_init_config_stat.stat.exists
+
+- name: Pre-pull control plane images
+  # Ошибка недоступности зеркала приходит до необратимой операции,
+  # а не в её середине.
+  ansible.builtin.command:
+    cmd: "kubeadm config images pull --config {{ control_plane_init_config_path }}"
+  when: control_plane_init_pull_images | bool
+  changed_when: true
+  retries: 3
+  delay: 10
+  register: control_plane_init_pull
+  until: control_plane_init_pull is succeeded
+
+- name: Run kubeadm init
+  ansible.builtin.command:
+    cmd: >-
+      kubeadm init
+      --config {{ control_plane_init_config_path }}
+      --upload-certs
+  register: control_plane_init_result
+  changed_when: true
+  # Вывод содержит bootstrap token и certificate key — в лог он попасть
+  # не должен (раздел 29.3).
+  no_log: true
+
+- name: Save the init log for troubleshooting
+  # Токен и certificate key вырезаются: файл остаётся на узле и переживает
+  # прогон, в отличие от вывода Ansible.
+  ansible.builtin.copy:
+    content: |
+      {{ control_plane_init_result.stdout
+         | regex_replace('--token\s+\S+', '--token <REDACTED>')
+         | regex_replace('--discovery-token-ca-cert-hash\s+\S+', '--discovery-token-ca-cert-hash <REDACTED>')
+         | regex_replace('--certificate-key\s+\S+', '--certificate-key <REDACTED>') }}
+    dest: /var/log/kubeadm-init.log
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Wait for the API server to become ready
+  ansible.builtin.uri:
+    url: "https://127.0.0.1:{{ control_plane_endpoint_port }}/readyz"
+    validate_certs: false
+    status_code: 200
+    timeout: 10
+  register: control_plane_init_readyz
+  retries: "{{ control_plane_init_readyz_retries }}"
+  delay: "{{ control_plane_init_readyz_delay }}"
+  until: control_plane_init_readyz.status == 200

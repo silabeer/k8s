@@ -1,0 +1,72 @@
+---
+# Проверяется факт шифрования в etcd, а не наличие флага у apiserver:
+# конфигурация может быть подключена, но не покрывать нужные ресурсы.
+
+- name: Create a test secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ cluster_validation_encryption_secret }}"
+        namespace: default
+      stringData:
+        canary: encryption-validation
+
+- name: Read the raw value from etcd
+  ansible.builtin.command:
+    cmd: >-
+      kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
+      etcdctl
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt
+      --cert=/etc/kubernetes/pki/etcd/server.crt
+      --key=/etc/kubernetes/pki/etcd/server.key
+      get /registry/secrets/default/{{ cluster_validation_encryption_secret }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cluster_validation_etcd_raw
+  changed_when: false
+
+- name: Assert the secret is encrypted at rest
+  vars:
+    expected_prefix: "k8s:enc:{{ etcd_encryption_provider }}:v1:"
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_etcd_raw.stdout is search(expected_prefix | regex_escape)
+      - "'encryption-validation' not in cluster_validation_etcd_raw.stdout"
+    fail_msg: >-
+      Secret в etcd не зашифрован: ожидался префикс {{ expected_prefix }}.
+      Проверьте --encryption-provider-config в манифесте kube-apiserver и то,
+      что resources в encryption-config включают secrets.
+    success_msg: "Secrets в etcd зашифрованы провайдером {{ etcd_encryption_provider }}."
+    quiet: true
+
+- name: Remove the test secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    kind: Secret
+    namespace: default
+    name: "{{ cluster_validation_encryption_secret }}"
+
+- name: Check the audit log is being written
+  ansible.builtin.stat:
+    path: "{{ audit_log_dir }}/audit.log"
+  register: cluster_validation_audit_stat
+
+- name: Assert the audit log is not empty
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_audit_stat.stat.exists
+      - cluster_validation_audit_stat.stat.size > 0
+    fail_msg: "{{ audit_log_dir }}/audit.log отсутствует или пуст."
+    quiet: true
+
+- name: Remind about audit log shipping
+  ansible.builtin.debug:
+    msg: >-
+      Audit log пишется ({{ cluster_validation_audit_stat.stat.size }} байт).
+      Отгрузка в центральное хранилище — задача observability-агента (wave 0);
+      локальный файл ротируется и не является архивом.

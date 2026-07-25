@@ -1,0 +1,24 @@
+---
+# Этап 05. Load Balancer для API endpoint.
+# Выполняется только при api_vip_managed: true. При использовании внешнего
+# корпоративного LB этап пропускается, доступность VIP проверена в preflight.
+
+- name: Configure API endpoint load balancer
+  hosts: load_balancers
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  tasks:
+    - name: Configure HAProxy and Keepalived
+      ansible.builtin.include_role:
+        name: haproxy_keepalived
+      when: api_vip_managed | bool
+
+    - name: Report skipped load balancer stage
+      ansible.builtin.debug:
+        msg: >-
+          api_vip_managed=false — используется внешний корпоративный LB,
+          этап 05 пропущен. Конфигурация внешнего LB должна быть
+          зафиксирована в документации кластера (раздел 28.2).
+      when: not (api_vip_managed | bool)
+      run_once: true

@@ -1,0 +1,26 @@
+{# {{ ansible_managed }} #}
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: {{ control_plane_endpoint }}
+    token: {{ node_join_token }}
+    caCertHashes:
+      - {{ node_join_ca_hash }}
+controlPlane:
+  certificateKey: {{ node_join_certificate_key }}
+  localAPIEndpoint:
+    advertiseAddress: {{ ansible_host }}
+    bindPort: {{ control_plane_endpoint_port }}
+nodeRegistration:
+  name: {{ inventory_hostname }}
+  criSocket: unix://{{ containerd_socket }}
+  imagePullPolicy: IfNotPresent
+  {#
+    Taint control-plane узла kubeadm выставляет сам; переопределять его
+    здесь не нужно — пустой список снял бы защиту от размещения
+    пользовательских workload.
+  #}
+  kubeletExtraArgs:
+    - name: node-ip
+      value: {{ ansible_host }}

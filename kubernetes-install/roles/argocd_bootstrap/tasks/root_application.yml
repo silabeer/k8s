@@ -1,0 +1,100 @@
+---
+# =============================================================================
+# Root Application применяется ИЗ GitOps-репозитория без модификаций (S8).
+#
+# Собственного шаблона Application у Ansible нет: манифест лежит в
+# clusters/<cluster>/bootstrap/root-application.yaml и входит в
+# bootstrap/kustomization.yaml, поэтому Argo CD управляет им сам. Только так
+# перевод root Application в AppProject platform-root (wave -20) выполняется
+# изменением в Git, а не ручной правкой.
+# =============================================================================
+
+- name: Read the root Application manifest from the repository
+  ansible.builtin.slurp:
+    src: "{{ argocd_root_app_path }}"
+  register: argocd_root_app_raw
+
+- name: Parse the root Application manifest
+  ansible.builtin.set_fact:
+    argocd_root_app_def: "{{ argocd_root_app_raw.content | b64decode | from_yaml }}"
+
+- name: Assert the manifest is an Argo CD Application with the expected name
+  ansible.builtin.assert:
+    that:
+      - argocd_root_app_def.kind == 'Application'
+      - argocd_root_app_def.metadata.name == argocd_root_app_name
+    fail_msg: >-
+      {{ argocd_root_app_relative_path }} должен содержать Application с именем
+      {{ argocd_root_app_name }}, получено
+      {{ argocd_root_app_def.kind }}/{{ argocd_root_app_def.metadata.name | default('?') }}.
+    quiet: true
+
+# Finalizer на root Application не ставится (раздел 18.3): с ним случайное
+# удаление cluster-bootstrap каскадно снесёт всю конфигурацию кластера.
+# Без finalizer удаление осиротит дочерние объекты, но не удалит их.
+- name: Assert the root Application carries no cascading finalizer
+  ansible.builtin.assert:
+    that:
+      - "'resources-finalizer.argocd.argoproj.io'
+         not in (argocd_root_app_def.metadata.finalizers | default([]))"
+    fail_msg: >-
+      В {{ argocd_root_app_relative_path }} присутствует finalizer
+      resources-finalizer.argocd.argoproj.io. Удаление root Application с ним
+      каскадно снесёт всю кластерную конфигурацию — уберите его из манифеста
+      (раздел 18.3).
+    quiet: true
+
+# Автоматика при первом bootstrap не включается (S9): ошибка в путях
+# ApplicationSet приведёт к массовому prune ещё до того, как кто-либо успеет
+# посмотреть diff.
+- name: Assert automation is disabled for the initial bootstrap
+  ansible.builtin.assert:
+    that:
+      - argocd_root_app_def.spec.syncPolicy.automated is not defined
+    fail_msg: >-
+      argocd.root_app_automated=false, но в манифесте задан
+      spec.syncPolicy.automated. Для первого bootstrap уберите этот блок,
+      выполните ручной sync с предварительным `argocd app diff
+      {{ argocd_root_app_name }}` и включите автоматику отдельным PR
+      (раздел 4.3, порядок включения автоматики).
+    quiet: true
+  when: not argocd.root_app_automated | bool
+
+- name: Apply the root Application
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition: "{{ argocd_root_app_def }}"
+    apply: true
+    server_side_apply:
+      field_manager: "{{ argocd_field_manager }}"
+      force_conflicts: true
+
+- name: Wait for Argo CD to register the root Application
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ argocd.namespace }}"
+    name: "{{ argocd_root_app_name }}"
+  register: argocd_root_app_live
+  retries: 20
+  delay: 10
+  until:
+    - argocd_root_app_live.resources | length > 0
+    - argocd_root_app_live.resources[0].status.sync.status is defined
+
+- name: Report the handover to GitOps
+  ansible.builtin.debug:
+    msg: >-
+      Root Application {{ argocd_root_app_name }} создан, статус
+      {{ argocd_root_app_live.resources[0].status.sync.status }}.
+      {% if not argocd.root_app_automated | bool %}
+      Автоматика выключена. Дальнейшие шаги вручную:
+      1) argocd app diff {{ argocd_root_app_name }}
+      2) argocd app sync {{ argocd_root_app_name }}
+      3) убедиться, что Cilium Application Synced без диффов в spec
+      4) включить automated + selfHeal отдельным PR, prune — последним.
+      {% else %}
+      Автоматика включена, дальнейшую установку выполняет Argo CD.
+      {% endif %}

@@ -1,0 +1,58 @@
+---
+# Swap отключается и в текущей системе, и в /etc/fstab (раздел 11).
+# Ubuntu cloud image дополнительно может поднимать swap через systemd-юнит
+# или zram — их тоже надо погасить, иначе swap вернётся после перезагрузки.
+
+- name: Check active swap
+  ansible.builtin.command:
+    cmd: swapon --noheadings --show=NAME
+  register: os_prepare_active_swap
+  changed_when: false
+  failed_when: false
+
+- name: Disable all active swap devices
+  ansible.builtin.command:
+    cmd: swapoff -a
+  when: os_prepare_active_swap.stdout | trim | length > 0
+  changed_when: true
+
+- name: Comment out swap entries in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#\s]\S*\s+\S*\s+swap\s+.*)$'
+    replace: '# \1  # disabled by ansible: kubernetes requires swap off'
+
+- name: Find systemd swap units  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: systemctl list-units --type swap --all --no-legend --plain
+  register: os_prepare_swap_units
+  changed_when: false
+  failed_when: false
+
+- name: Mask systemd swap units
+  ansible.builtin.systemd:
+    name: "{{ item.split()[0] }}"
+    enabled: false
+    masked: true
+    state: stopped
+  loop: "{{ os_prepare_swap_units.stdout_lines | select('search', '\\.swap') | list }}"
+  loop_control:
+    label: "{{ item.split()[0] }}"
+  when: os_prepare_swap_units.stdout_lines | length > 0
+
+- name: Disable zram swap generator if present
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    masked: true
+    state: stopped
+  loop:
+    - systemd-zram-setup@zram0.service
+  failed_when: false
+
+- name: Verify swap is off
+  ansible.builtin.command:
+    cmd: swapon --noheadings --show=NAME
+  register: os_prepare_swap_after
+  changed_when: false
+  failed_when: os_prepare_swap_after.stdout | trim | length > 0

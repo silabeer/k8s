@@ -1,0 +1,108 @@
+---
+# =============================================================================
+# Форма вызова helm template (B3)
+#
+# Две формы указания чарта ВЗАИМОИСКЛЮЧАЮЩИЕ:
+#   OCI:  helm template cilium oci://harbor/charts/cilium --version X
+#   repo: helm template cilium cilium --repo https://helm.cilium.io/ --version X
+#
+# Смешивание — `helm template cilium cilium/cilium --repo <url>` — ошибка:
+# с --repo имя чарта указывается БЕЗ префикса репозитория, иначе helm ищет
+# чарт `cilium/cilium` внутри указанного репозитория и не находит.
+#
+# Команда собирается здесь в единственном месте, поэтому разъехаться формы
+# не могут.
+# =============================================================================
+
+- name: Build the chart reference
+  ansible.builtin.set_fact:
+    cilium_chart_ref: >-
+      {{ cni.chart_oci if cni.chart_source == 'oci' else cni.chart_name }}
+    cilium_repo_args: >-
+      {{ [] if cni.chart_source == 'oci' else ['--repo', cni.chart_repo] }}
+
+- name: Assert the chart source is known
+  ansible.builtin.assert:
+    that:
+      - cni.chart_source in ['oci', 'repo']
+    fail_msg: "cni.chart_source должен быть oci или repo, получено: {{ cni.chart_source }}"
+    quiet: true
+
+- name: Create the bootstrap manifest directory
+  ansible.builtin.file:
+    path: "{{ cilium_manifest_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# helm template, а не helm install (раздел 4.3): в кластере не создаётся
+# helm release secret sh.helm.release.v1.*, поэтому после takeover не
+# остаётся осиротевшего релиза, который Argo CD не видит и не чистит.
+- name: Render the Cilium chart
+  ansible.builtin.command:
+    argv: >-
+      {{ ['helm', 'template', cilium_release_name, cilium_chart_ref]
+         + cilium_repo_args
+         + ['--version', cni.version,
+            '--namespace', cilium_namespace,
+            '--values', cilium_values_path] }}
+  register: cilium_rendered
+  changed_when: false
+
+- name: Write the rendered manifest
+  ansible.builtin.copy:
+    content: "{{ cilium_rendered.stdout }}"
+    dest: "{{ cilium_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Assert the rendered manifest is not empty
+  ansible.builtin.assert:
+    that:
+      - cilium_rendered.stdout | length > 1000
+      - cilium_rendered.stdout is search('kind:\s*DaemonSet')
+    fail_msg: >-
+      Рендер чарта Cilium не дал DaemonSet. Проверьте values в
+      {{ cilium_values_path }} и версию чарта {{ cni.version }}.
+    quiet: true
+
+# Server-Side Apply тем же field manager, которым потом работает Argo CD:
+# при takeover владение полями переходит без конфликтов.
+- name: Apply the Cilium manifest
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - --server-side
+      - --force-conflicts
+      - --field-manager={{ cilium_field_manager }}
+      - -f
+      - "{{ cilium_manifest_path }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cilium_apply
+  changed_when: "'configured' in cilium_apply.stdout or 'created' in cilium_apply.stdout"
+
+- name: Assert no helm release secret was created
+  # Контроль того, что установка действительно шла через helm template:
+  # helm install оставил бы sh.helm.release.v1.cilium.*, и Argo CD после
+  # takeover не смог бы им управлять.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ cilium_namespace }}"
+    label_selectors:
+      - "owner=helm"
+      - "name={{ cilium_release_name }}"
+  register: cilium_helm_secrets
+  failed_when: cilium_helm_secrets.resources | length > 0
+
+- name: Record the applied revision
+  ansible.builtin.debug:
+    msg: >-
+      Cilium {{ cni.version }} применён из
+      {{ gitops.cluster_path }}/{{ cilium_values_relative_path }}
+      (ревизия {{ cilium_values_revision }}), field manager
+      {{ cilium_field_manager }}.

@@ -1,0 +1,36 @@
+---
+- name: Assert mandatory variables are set
+  ansible.builtin.import_tasks: assert_variables.yml
+  tags: [preflight, preflight_vars]
+
+- name: Check operating system
+  ansible.builtin.import_tasks: check_os.yml
+  tags: [preflight, preflight_os]
+
+- name: Check node resources
+  ansible.builtin.import_tasks: check_resources.yml
+  tags: [preflight, preflight_resources]
+
+- name: Check inventory consistency
+  ansible.builtin.import_tasks: check_inventory.yml
+  tags: [preflight, preflight_inventory]
+
+- name: Check network
+  ansible.builtin.import_tasks: check_network.yml
+  tags: [preflight, preflight_network]
+
+- name: Check external endpoints
+  ansible.builtin.import_tasks: check_endpoints.yml
+  tags: [preflight, preflight_endpoints]
+
+- name: Check time synchronisation
+  ansible.builtin.import_tasks: check_time.yml
+  tags: [preflight, preflight_time]
+
+- name: Report preflight success
+  ansible.builtin.debug:
+    msg: >-
+      Preflight пройден на {{ inventory_hostname }}:
+      {{ ansible_processor_vcpus }} vCPU, {{ ansible_memtotal_mb }} MB RAM,
+      ядро {{ ansible_kernel }}, {{ ansible_distribution }} {{ ansible_distribution_version }}.
+  tags: [preflight]

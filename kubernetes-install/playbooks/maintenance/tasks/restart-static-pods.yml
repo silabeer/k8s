@@ -1,0 +1,51 @@
+---
+# Перезапуск static pods control plane перемещением манифестов.
+# kubelet удаляет Pod при исчезновении файла и создаёт заново при появлении.
+
+- name: Create temporary manifest directory
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests-restart
+    state: directory
+    mode: "0700"
+
+- name: Move static pod manifests out
+  ansible.builtin.command:
+    cmd: "mv /etc/kubernetes/manifests/{{ item }}.yaml /etc/kubernetes/manifests-restart/{{ item }}.yaml"
+    removes: "/etc/kubernetes/manifests/{{ item }}.yaml"
+  loop:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+    - etcd
+  changed_when: true
+
+- name: Wait for static pod containers to stop
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      crictl ps --quiet
+      --label io.kubernetes.pod.namespace=kube-system
+      --name 'kube-apiserver|etcd' | wc -l
+  args:
+    executable: /bin/bash
+  register: running_containers
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: running_containers.stdout | trim | int == 0
+
+- name: Move static pod manifests back
+  ansible.builtin.command:
+    cmd: "mv /etc/kubernetes/manifests-restart/{{ item }}.yaml /etc/kubernetes/manifests/{{ item }}.yaml"
+    removes: "/etc/kubernetes/manifests-restart/{{ item }}.yaml"
+  loop:
+    - etcd
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+  changed_when: true
+
+- name: Remove temporary manifest directory
+  ansible.builtin.file:
+    path: /etc/kubernetes/manifests-restart
+    state: absent

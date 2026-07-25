@@ -1,0 +1,70 @@
+---
+# Отдельный диск под etcd (раздел 5.2).
+#
+# Монтируется ДО kubeadm init (S12): kubeadm создаёт /var/lib/etcd при
+# инициализации, и монтирование диска поверх уже наполненного каталога
+# спрячет данные etcd — кластер поднимется с пустой базой.
+
+- name: Assert etcd disk device is configured
+  ansible.builtin.assert:
+    that:
+      - etcd_disk_device is not none
+      - etcd_disk_device | length > 0
+    fail_msg: "etcd_disk_manage=true, но etcd_disk_device не задан."
+    quiet: true
+
+- name: Check whether the mountpoint is already a mount
+  ansible.builtin.set_fact:
+    etcd_disk_already_mounted: >-
+      {{ ansible_mounts | selectattr('mount', 'equalto', etcd_disk_mountpoint)
+         | list | length > 0 }}
+
+- name: Check for existing etcd data
+  ansible.builtin.stat:
+    path: "{{ etcd_disk_mountpoint }}/member"
+  register: os_prepare_etcd_member
+
+# Если данные etcd уже лежат на корневом разделе, значит kubeadm init прошёл
+# раньше, чем был подключён диск. Молча смонтировать поверх — потерять кластер.
+- name: Refuse to mount over existing etcd data
+  ansible.builtin.assert:
+    that:
+      - not (os_prepare_etcd_member.stat.exists and not etcd_disk_already_mounted)
+    fail_msg: >-
+      В {{ etcd_disk_mountpoint }} уже есть данные etcd, но каталог не является
+      точкой монтирования. Монтирование диска поверх скроет данные и поднимет
+      кластер с пустой базой. Перенесите данные вручную либо выставьте
+      etcd_disk_manage=false.
+    quiet: true
+
+- name: Create filesystem on the etcd disk
+  community.general.filesystem:
+    fstype: "{{ etcd_disk_filesystem }}"
+    dev: "{{ etcd_disk_device }}"
+    # force не выставляется намеренно: модуль не тронет диск с существующей
+    # файловой системой, что защищает от переформатирования при повторном
+    # прогоне playbook (раздел 24).
+    force: false
+
+- name: Create the etcd mountpoint
+  ansible.builtin.file:
+    path: "{{ etcd_disk_mountpoint }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Mount the etcd disk
+  ansible.posix.mount:
+    path: "{{ etcd_disk_mountpoint }}"
+    src: "{{ etcd_disk_device }}"
+    fstype: "{{ etcd_disk_filesystem }}"
+    opts: "{{ etcd_disk_mount_opts }}"
+    state: mounted
+
+- name: Verify the etcd disk is mounted
+  ansible.builtin.command:
+    cmd: "findmnt --noheadings --output SOURCE --target {{ etcd_disk_mountpoint }}"
+  register: os_prepare_etcd_mount_check
+  changed_when: false
+  failed_when: etcd_disk_device not in os_prepare_etcd_mount_check.stdout

@@ -1,0 +1,86 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Assert base packages are installed
+      ansible.builtin.command:
+        cmd: "dpkg-query -W -f=${Status} {{ item }}"
+      register: pkg_status
+      changed_when: false
+      failed_when: "'install ok installed' not in pkg_status.stdout"
+      loop:
+        - chrony
+        - conntrack
+        - socat
+        - ethtool
+        - jq
+
+    - name: Read chrony configuration
+      ansible.builtin.slurp:
+        src: /etc/chrony/chrony.conf
+      register: chrony_conf
+
+    - name: Assert NTP servers from inventory are configured
+      ansible.builtin.assert:
+        that:
+          - (chrony_conf.content | b64decode) is search('server ' ~ (item | regex_escape) ~ ' iburst')
+        fail_msg: "NTP-сервер {{ item }} отсутствует в chrony.conf."
+        quiet: true
+      loop: "{{ ntp_servers }}"
+
+    - name: Assert chrony is running and enabled
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['chrony.service'].state == 'running'
+          - ansible_facts.services['chrony.service'].status == 'enabled'
+        quiet: true
+
+    - name: Read /etc/hosts
+      ansible.builtin.slurp:
+        src: /etc/hosts
+      register: hosts_file
+
+    - name: Assert cluster nodes are present in /etc/hosts
+      ansible.builtin.assert:
+        that:
+          - (hosts_file.content | b64decode) is search('ANSIBLE MANAGED: kubernetes cluster')
+          - (hosts_file.content | b64decode) is search('10.99.0.21\s+molecule-osprep-cp-01')
+        fail_msg: "Блок с узлами кластера не добавлен в /etc/hosts."
+        quiet: true
+
+    - name: Stat the journald configuration
+      ansible.builtin.stat:
+        path: /etc/systemd/journald.conf.d/99-kubernetes.conf
+      register: journald_conf
+
+    - name: Assert journald limits are configured
+      ansible.builtin.assert:
+        that:
+          - journald_conf.stat.exists
+          - journald_conf.stat.mode == '0644'
+        fail_msg: >-
+          Лимиты journald не настроены — журнал способен занять весь /var
+          и уронить kubelet по disk pressure.
+        quiet: true
+
+    - name: Stat the container logrotate configuration
+      ansible.builtin.stat:
+        path: /etc/logrotate.d/kubernetes-containers
+      register: logrotate_conf
+
+    - name: Assert container log rotation is configured
+      ansible.builtin.assert:
+        that:
+          - logrotate_conf.stat.exists
+        quiet: true
+
+    - name: Validate the logrotate configuration syntax
+      ansible.builtin.command:
+        cmd: logrotate -d /etc/logrotate.d/kubernetes-containers
+      changed_when: false

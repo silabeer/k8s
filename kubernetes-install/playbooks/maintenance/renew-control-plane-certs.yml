@@ -1,0 +1,97 @@
+---
+# Продление PKI control plane (S10).
+#
+# Сертификаты kubeadm живут один год. `rotateCertificates: true` в
+# KubeletConfiguration покрывает ТОЛЬКО клиентские сертификаты kubelet;
+# сертификаты apiserver, etcd и front-proxy не продлеваются сами.
+# Неявно они обновляются при `kubeadm upgrade apply`, поэтому кластер,
+# который не апгрейдился год, умирает тихо.
+#
+# Регламент: запускать не реже раза в 6 месяцев либо при срабатывании
+# алерта на apiserver_client_certificate_expiration_seconds.
+#
+#   ansible-playbook playbooks/maintenance/renew-control-plane-certs.yml
+#
+# Выполняется по одному узлу: на время рестарта static pods узел не
+# обслуживает API, кворум держат остальные.
+
+- name: Renew control plane certificates
+  hosts: control_plane
+  serial: 1
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Show certificate expiration before renewal
+      ansible.builtin.command:
+        cmd: kubeadm certs check-expiration
+      changed_when: false
+      register: certs_before
+
+    - name: Report current expiration
+      ansible.builtin.debug:
+        var: certs_before.stdout_lines
+
+    - name: Back up existing PKI
+      ansible.builtin.copy:
+        src: /etc/kubernetes/pki/
+        dest: "/etc/kubernetes/pki.backup-{{ ansible_date_time.iso8601_basic_short }}/"
+        remote_src: true
+        mode: preserve
+      register: pki_backup
+
+    - name: Back up kubeconfig files
+      ansible.builtin.copy:
+        src: "/etc/kubernetes/{{ item }}"
+        dest: "/etc/kubernetes/{{ item }}.backup-{{ ansible_date_time.iso8601_basic_short }}"
+        remote_src: true
+        mode: "0600"
+      loop:
+        - admin.conf
+        - controller-manager.conf
+        - scheduler.conf
+
+    - name: Renew all certificates
+      ansible.builtin.command:
+        cmd: kubeadm certs renew all
+      changed_when: true
+      notify: Restart control plane static pods
+
+    - name: Flush handlers to restart static pods now
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for API server to become ready
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:6443/readyz"
+        validate_certs: false
+        status_code: 200
+      register: readyz
+      retries: 30
+      delay: 10
+      until: readyz.status == 200
+
+    - name: Show certificate expiration after renewal
+      ansible.builtin.command:
+        cmd: kubeadm certs check-expiration
+      changed_when: false
+      register: certs_after
+
+    - name: Report new expiration
+      ansible.builtin.debug:
+        var: certs_after.stdout_lines
+
+    - name: Remind about kubelet client certificate
+      ansible.builtin.debug:
+        msg: >-
+          PKI control plane продлён. Клиентские сертификаты kubelet
+          ротируются самостоятельно (rotateCertificates), serving-сертификаты
+          обслуживает kubelet-csr-approver. Копия старого PKI:
+          {{ pki_backup.dest | default('/etc/kubernetes/pki.backup-*') }}
+
+  handlers:
+    # Static pods перезапускаются перемещением манифеста: kubelet удаляет Pod
+    # при исчезновении файла и создаёт заново при появлении. Это надёжнее
+    # `crictl rm`, который kubelet может пережить кэшем.
+    - name: Restart control plane static pods
+      ansible.builtin.include_tasks: tasks/restart-static-pods.yml

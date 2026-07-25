@@ -1,0 +1,13 @@
+---
+# Этап 42. Присоединение worker-узлов.
+# Worker-узлы остаются NotReady до установки CNI — это ожидаемое состояние.
+
+- name: Join worker nodes
+  hosts: workers
+  serial: 2
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: node_join
+      node_join_type: worker

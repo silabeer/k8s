@@ -1,0 +1,10 @@
+---
+# Этап 60. Bootstrap Argo CD и передача управления GitOps-контуру.
+
+- name: Bootstrap Argo CD
+  hosts: control_plane[0]
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: argocd_bootstrap

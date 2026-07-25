@@ -1,0 +1,12 @@
+---
+- name: Prepare
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Bootstrap python and download tooling
+      ansible.builtin.raw: |
+        set -e
+        apt-get update -qq
+        apt-get install -y -qq python3 ca-certificates curl tar
+      changed_when: true

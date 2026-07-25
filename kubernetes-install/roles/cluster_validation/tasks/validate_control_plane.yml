@@ -1,0 +1,80 @@
+---
+- name: Check readyz with details
+  ansible.builtin.command:
+    cmd: "kubectl get --raw=/readyz?verbose"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cluster_validation_readyz
+  changed_when: false
+
+- name: Assert no readyz check is failing
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_readyz.stdout_lines
+        | select('search', '\[-\]') | list | length == 0
+    fail_msg: >-
+      Провалены проверки readyz:
+      {{ cluster_validation_readyz.stdout_lines | select('search', '\[-\]') | list }}
+    quiet: true
+
+- name: Check livez with details
+  ansible.builtin.command:
+    cmd: "kubectl get --raw=/livez?verbose"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cluster_validation_livez
+  changed_when: false
+
+- name: Assert no livez check is failing
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_livez.stdout_lines
+        | select('search', '\[-\]') | list | length == 0
+    fail_msg: >-
+      Провалены проверки livez:
+      {{ cluster_validation_livez.stdout_lines | select('search', '\[-\]') | list }}
+    quiet: true
+
+- name: Get kube-system pods
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Pod
+    namespace: kube-system
+  register: cluster_validation_system_pods
+
+- name: Assert no kube-system pod is stuck
+  vars:
+    unhealthy: >-
+      {{ cluster_validation_system_pods.resources
+         | rejectattr('status.phase', 'in', ['Running', 'Succeeded'])
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - unhealthy | length == 0
+    fail_msg: "Pod'ы kube-system не в порядке: {{ unhealthy }}"
+    quiet: true
+
+- name: Assert CoreDNS is available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: kube-system
+    name: coredns
+  register: cluster_validation_coredns
+  retries: "{{ cluster_validation_retries }}"
+  delay: "{{ cluster_validation_delay }}"
+  until:
+    - cluster_validation_coredns.resources | length > 0
+    - cluster_validation_coredns.resources[0].status.readyReplicas | default(0) > 0
+
+- name: Verify kubelet metrics are reachable over TLS
+  # Прямое следствие аппрува serving CSR: без валидного serving-сертификата
+  # этот запрос падает на TLS, и metrics-server не заработает.
+  ansible.builtin.command:
+    cmd: "kubectl get --raw /api/v1/nodes/{{ item }}/proxy/metrics"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  loop: "{{ groups['kubernetes'] }}"
+  register: cluster_validation_kubelet_metrics
+  changed_when: false
+  failed_when: cluster_validation_kubelet_metrics.rc != 0

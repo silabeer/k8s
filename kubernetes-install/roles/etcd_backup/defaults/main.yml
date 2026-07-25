@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# АЛЬТЕРНАТИВНЫЙ механизм резервного копирования etcd.
+#
+# По умолчанию бэкап выполняет CronJob, устанавливаемый через GitOps (wave 0,
+# раздел 28.1) — он управляется из Git. Эта роль применяется только там, где
+# hostPath в Pod запрещён политикой, и требует осознанного включения.
+# =============================================================================
+etcd_backup_enabled: false
+
+etcd_backup_dir: /var/backups/etcd
+etcd_backup_script_path: /usr/local/bin/etcd-snapshot.sh
+etcd_backup_retention_days: 7
+
+# Не реже раза в сутки для prod (раздел 28.1)
+etcd_backup_oncalendar: "*-*-* 02:00:00"
+etcd_backup_randomized_delay: "30m"
+
+etcd_backup_cacert: /etc/kubernetes/pki/etcd/ca.crt
+etcd_backup_cert: /etc/kubernetes/pki/etcd/server.crt
+etcd_backup_key: /etc/kubernetes/pki/etcd/server.key
+etcd_backup_endpoints: "https://127.0.0.1:2379"
+
+# Выгрузка во внешнее хранилище: snapshot, лежащий только на том же узле,
+# не является резервной копией.
+etcd_backup_upload_enabled: false
+etcd_backup_s3_bucket: ~
+etcd_backup_s3_endpoint: ~
+etcd_backup_s3_prefix: "etcd/{{ cluster_name }}"
+
+# Референсный манифест CronJob для GitOps-репозитория
+etcd_backup_render_cronjob_reference: true
+etcd_backup_cronjob_reference_path: /etc/kubernetes/bootstrap/etcd-backup-cronjob.reference.yaml

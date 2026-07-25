@@ -1,0 +1,129 @@
+---
+# Требует CSI и default StorageClass из GitOps (wave -10). По умолчанию
+# выключено: при первом прогоне 70-validation.yml их ещё нет.
+
+- name: Get storage classes
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+  register: cluster_validation_storage_classes
+
+- name: Assert a default storage class exists
+  vars:
+    defaults: >-
+      {{ cluster_validation_storage_classes.resources
+         | selectattr('metadata.annotations', 'defined')
+         | selectattr('metadata.annotations', 'contains',
+                      'storageclass.kubernetes.io/is-default-class')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - defaults | length == 1
+    fail_msg: >-
+      Default StorageClass должен быть ровно один, найдено: {{ defaults }}.
+      Ноль — PVC без явного storageClassName останутся Pending. Несколько —
+      выбор недетерминирован.
+    quiet: true
+
+- name: Run the storage smoke test
+  block:
+    - name: Create the validation namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ cluster_validation_test_namespace }}"
+
+    - name: Create a PVC
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: validation-pvc
+            namespace: "{{ cluster_validation_test_namespace }}"
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: 1Gi
+
+    - name: Write data from a pod
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        wait: true
+        wait_condition:
+          type: Complete
+          status: "True"
+        wait_timeout: 300
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: validation-write
+            namespace: "{{ cluster_validation_test_namespace }}"
+          spec:
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: writer
+                    image: "{{ registry_host }}/k8s/busybox:1.36"
+                    command: ["sh", "-c", "echo validation-payload > /data/canary && sync"]
+                    volumeMounts:
+                      - name: data
+                        mountPath: /data
+                volumes:
+                  - name: data
+                    persistentVolumeClaim:
+                      claimName: validation-pvc
+
+    - name: Read the data back from a separate pod
+      # Отдельный Pod, а не тот же: проверяется, что данные переживают
+      # пересоздание Pod, а не просто попали в его файловую систему.
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        wait: true
+        wait_condition:
+          type: Complete
+          status: "True"
+        wait_timeout: 300
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: validation-read
+            namespace: "{{ cluster_validation_test_namespace }}"
+          spec:
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: reader
+                    image: "{{ registry_host }}/k8s/busybox:1.36"
+                    command: ["sh", "-c", "grep -q validation-payload /data/canary"]
+                    volumeMounts:
+                      - name: data
+                        mountPath: /data
+                volumes:
+                  - name: data
+                    persistentVolumeClaim:
+                      claimName: validation-pvc
+
+  always:
+    - name: Remove the validation namespace
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: absent
+        kind: Namespace
+        name: "{{ cluster_validation_test_namespace }}"
+        wait: true
+        wait_timeout: 300

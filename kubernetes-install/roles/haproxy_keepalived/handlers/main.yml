@@ -1,0 +1,11 @@
+---
+# reload, а не restart: restart рвёт установленные соединения к apiserver.
+- name: Reload haproxy
+  ansible.builtin.systemd:
+    name: haproxy
+    state: reloaded
+
+- name: Restart keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    state: restarted

@@ -1,0 +1,180 @@
+{# {{ ansible_managed }} #}
+{#
+  kubeadm v1beta4. Отличие от v1beta3, о которое чаще всего спотыкаются:
+  extraArgs — это СПИСОК объектов {name, value}, а не словарь.
+-#}
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: {{ ansible_host }}
+  bindPort: {{ control_plane_endpoint_port }}
+nodeRegistration:
+  name: {{ inventory_hostname }}
+  criSocket: unix://{{ containerd_socket }}
+  imagePullPolicy: IfNotPresent
+  kubeletExtraArgs:
+    - name: node-ip
+      value: {{ ansible_host }}
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: {{ cluster_name }}
+kubernetesVersion: v{{ kubernetes_version }}
+
+{# Указывать IP первого control-plane узла как controlPlaneEndpoint нельзя:
+   endpoint зашивается в kubeconfig всех компонентов и сменить его потом
+   можно только пересозданием кластера (раздел 3.2). #}
+controlPlaneEndpoint: {{ control_plane_endpoint }}
+imageRepository: {{ image_repository }}
+certificatesDir: /etc/kubernetes/pki
+
+networking:
+  podSubnet: {{ pod_network_cidr }}
+  serviceSubnet: {{ service_network_cidr }}
+  dnsDomain: {{ cluster_domain }}
+
+apiServer:
+  certSANs:
+    - {{ control_plane_endpoint_host }}
+    - {{ api_vip }}
+{% for host in groups['control_plane'] %}
+    - {{ host }}
+    - {{ hostvars[host].ansible_host }}
+{% endfor %}
+  extraArgs:
+    # --- Шифрование Secrets в etcd ---
+    - name: encryption-provider-config
+      value: {{ kubeadm_encryption_config_path }}
+    # Перечитывает конфигурацию без рестарта apiserver — упрощает ротацию ключа.
+    - name: encryption-provider-config-automatic-reload
+      value: "true"
+
+    # --- Аудит ---
+    - name: audit-policy-file
+      value: {{ kubeadm_audit_policy_path }}
+    - name: audit-log-path
+      value: {{ audit_log_dir }}/audit.log
+    - name: audit-log-maxage
+      value: "{{ audit_log_max_age }}"
+    - name: audit-log-maxbackup
+      value: "{{ audit_log_max_backup }}"
+    - name: audit-log-maxsize
+      value: "{{ audit_log_max_size }}"
+
+{% if pod_security_admission_enabled %}
+    # --- Pod Security Admission ---
+    - name: admission-control-config-file
+      value: {{ kubeadm_admission_config_path }}
+{% endif %}
+
+    # --- TLS ---
+    - name: tls-min-version
+      value: {{ tls_min_version }}
+    - name: tls-cipher-suites
+      value: {{ tls_cipher_suites | join(',') }}
+
+    # Профилировщик наружу в проде не нужен и является вектором утечки
+    - name: profiling
+      value: "false"
+
+  extraVolumes:
+    - name: encryption-config
+      hostPath: {{ kubeadm_encryption_config_path }}
+      mountPath: {{ kubeadm_encryption_config_path }}
+      readOnly: true
+      pathType: File
+    - name: audit-policy
+      hostPath: {{ kubeadm_audit_policy_path }}
+      mountPath: {{ kubeadm_audit_policy_path }}
+      readOnly: true
+      pathType: File
+    - name: audit-log
+      hostPath: {{ audit_log_dir }}
+      mountPath: {{ audit_log_dir }}
+      readOnly: false
+      pathType: DirectoryOrCreate
+{% if pod_security_admission_enabled %}
+    - name: admission-config
+      hostPath: {{ kubeadm_admission_config_path }}
+      mountPath: {{ kubeadm_admission_config_path }}
+      readOnly: true
+      pathType: File
+{% endif %}
+
+controllerManager:
+  extraArgs:
+    - name: tls-min-version
+      value: {{ tls_min_version }}
+    - name: tls-cipher-suites
+      value: {{ tls_cipher_suites | join(',') }}
+    - name: profiling
+      value: "false"
+    # Обязательно для ipam.mode=kubernetes в Cilium: адреса Pod-подсетей
+    # узлам раздаёт controller-manager. kubeadm включает это при заданном
+    # podSubnet, дублируем явно, чтобы связь была видна в конфигурации.
+    - name: allocate-node-cidrs
+      value: "true"
+    - name: cluster-cidr
+      value: {{ pod_network_cidr }}
+
+scheduler:
+  extraArgs:
+    - name: tls-min-version
+      value: {{ tls_min_version }}
+    - name: tls-cipher-suites
+      value: {{ tls_cipher_suites | join(',') }}
+    - name: profiling
+      value: "false"
+
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+    extraArgs:
+      {# etcd принимает версию TLS в другом формате, чем apiserver #}
+      - name: tls-min-version
+        value: {{ etcd_tls_min_version }}
+      - name: cipher-suites
+        value: {{ tls_cipher_suites | join(',') }}
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+
+# Один cgroup driver с container runtime
+cgroupDriver: systemd
+
+{# protectKernelDefaults: kubelet НЕ выставляет sysctl, а падает при
+   несовпадении. Полный набор из шести значений обеспечивает роль kernel
+   (см. roles/kernel/defaults/main.yml). #}
+protectKernelDefaults: true
+
+# Клиентский сертификат kubelet ротируется сам; serving-сертификат
+# запрашивается через CSR API и требует аппрува — при bootstrap однократно
+# ролью cluster_validation, далее kubelet-csr-approver (раздел 14.4).
+rotateCertificates: true
+serverTLSBootstrap: true
+
+tlsMinVersion: {{ tls_min_version }}
+tlsCipherSuites:
+{% for suite in tls_cipher_suites %}
+  - {{ suite }}
+{% endfor %}
+
+# Ротация логов контейнеров на стороне kubelet
+containerLogMaxSize: "{{ kubelet_container_log_max_size }}"
+containerLogMaxFiles: {{ kubelet_container_log_max_files }}
+
+systemReserved:
+{% for key, value in kubelet_system_reserved.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}
+kubeReserved:
+{% for key, value in kubelet_kube_reserved.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}
+
+{# evictionHard заменяет карту дефолтов ЦЕЛИКОМ. nodefs.inodesFree обязан
+   присутствовать явно, иначе исчерпание inode перестанет вытеснять Pod'ы. #}
+evictionHard:
+{% for key, value in kubelet_eviction_hard.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}

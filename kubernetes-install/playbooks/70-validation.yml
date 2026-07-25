@@ -1,0 +1,12 @@
+---
+# Этап 70. Валидация установки.
+# Playbook считается успешно выполненным только после прохождения этой роли
+# (раздел 23).
+
+- name: Validate cluster
+  hosts: control_plane[0]
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: cluster_validation

@@ -1,0 +1,42 @@
+---
+# Проверяем фактические значения в /proc, а не факт записи в sysctl.d.
+# Значение может быть перебито более приоритетным файлом в /etc/sysctl.d,
+# настройкой облачного агента или cloud-init — и тогда kubelet не стартует,
+# а причина будет неочевидна.
+
+- name: Read effective sysctl values
+  ansible.builtin.slurp:
+    src: "/proc/sys/{{ item.key | replace('.', '/') }}"
+  loop: "{{ kernel_sysctl_protect_defaults | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: kernel_effective_sysctl
+
+- name: Assert every protectKernelDefaults value matches what kubelet expects
+  ansible.builtin.assert:
+    that:
+      - (item.content | b64decode | trim | int) == (item.item.value | int)
+    fail_msg: >-
+      sysctl {{ item.item.key }} = {{ item.content | b64decode | trim }},
+      kubelet с protectKernelDefaults: true ожидает {{ item.item.value }}.
+      Значение перебивается другим файлом в /etc/sysctl.d — проверьте:
+      grep -r {{ item.item.key }} /etc/sysctl.conf /etc/sysctl.d/
+    success_msg: "{{ item.item.key }} = {{ item.item.value }}"
+    quiet: true
+  loop: "{{ kernel_effective_sysctl.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Assert required kernel modules are loaded
+  ansible.builtin.command:
+    cmd: "lsmod"
+  register: kernel_lsmod
+  changed_when: false
+
+- name: Verify each module is present
+  ansible.builtin.assert:
+    that:
+      - kernel_lsmod.stdout is search('^' ~ (item | replace('-', '_')), multiline=True)
+    fail_msg: "Модуль ядра {{ item }} не загружен."
+    quiet: true
+  loop: "{{ kernel_modules }}"

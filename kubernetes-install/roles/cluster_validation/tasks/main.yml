@@ -1,0 +1,56 @@
+---
+# Аппрув CSR идёт ПЕРВЫМ: без serving-сертификатов kubelet не отвечает по TLS,
+# и часть последующих проверок даст ложный отказ.
+- name: Approve pending kubelet serving CSRs
+  ansible.builtin.import_tasks: approve_csrs.yml
+  when: cluster_validation_approve_csrs | bool
+  tags: [validation, validation_csr]
+
+- name: Validate nodes
+  ansible.builtin.import_tasks: validate_nodes.yml
+  tags: [validation, validation_nodes]
+
+- name: Validate control plane
+  ansible.builtin.import_tasks: validate_control_plane.yml
+  tags: [validation, validation_control_plane]
+
+- name: Validate Secret encryption and audit
+  ansible.builtin.import_tasks: validate_encryption.yml
+  when: cluster_validation_check_encryption | bool
+  tags: [validation, validation_encryption]
+
+- name: Validate etcd
+  ansible.builtin.import_tasks: validate_etcd.yml
+  when: cluster_validation_check_etcd | bool
+  tags: [validation, validation_etcd]
+
+- name: Validate networking
+  ansible.builtin.import_tasks: validate_network.yml
+  when: cluster_validation_check_network | bool
+  tags: [validation, validation_network]
+
+- name: Validate Argo CD
+  ansible.builtin.import_tasks: validate_argocd.yml
+  when: cluster_validation_check_argocd | bool
+  tags: [validation, validation_argocd]
+
+- name: Validate control plane certificates
+  ansible.builtin.import_tasks: validate_certificates.yml
+  when: cluster_validation_check_certificates | bool
+  tags: [validation, validation_certs]
+
+- name: Validate storage
+  ansible.builtin.import_tasks: validate_storage.yml
+  when: cluster_validation_check_storage | bool
+  tags: [validation, validation_storage]
+
+- name: Report validation success
+  ansible.builtin.debug:
+    msg: >-
+      Валидация кластера {{ cluster_name }} пройдена.
+      {% if not cluster_validation_check_storage | bool %}
+      Проверка storage пропущена: CSI и StorageClass приезжают через GitOps
+      (wave -10). Повторите с -e cluster_validation_check_storage=true после
+      их установки.
+      {% endif %}
+  tags: [validation]

@@ -1,0 +1,48 @@
+---
+- name: Assert containerd major version matches the config template
+  # Шаблон config.toml написан под схему version = 3 (containerd 2.x):
+  # имена плагинов io.containerd.cri.v1.* и секция mirrors, удалённая
+  # из config.toml. При переходе на 1.x шаблон обязан быть пересмотрен
+  # (раздел 12 playbook).
+  ansible.builtin.assert:
+    that:
+      - containerd_version is version('2.0.0', '>=')
+    fail_msg: >-
+      Шаблон config.toml рассчитан на containerd 2.x (version = 3),
+      получено {{ containerd_version }}. Для 1.x требуется отдельный шаблон.
+    quiet: true
+
+- name: Install containerd from tarball
+  ansible.builtin.import_tasks: install_binary.yml
+  when: containerd_install_method == 'binary'
+
+- name: Install containerd from package
+  ansible.builtin.import_tasks: install_package.yml
+  when: containerd_install_method == 'package'
+
+- name: Install CNI plugins
+  ansible.builtin.import_tasks: cni_plugins.yml
+
+- name: Configure containerd
+  ansible.builtin.import_tasks: configure.yml
+
+- name: Configure registry mirrors
+  ansible.builtin.import_tasks: registry_mirrors.yml
+
+- name: Configure crictl
+  ansible.builtin.template:
+    src: crictl.yaml.j2
+    dest: /etc/crictl.yaml
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start containerd
+  ansible.builtin.systemd:
+    name: containerd
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify containerd
+  ansible.builtin.import_tasks: verify.yml

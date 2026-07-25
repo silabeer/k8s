@@ -1,0 +1,54 @@
+---
+# Уровень 1: логика проверок на mock-фактах. Сетевые проверки и обращения
+# к внешним системам выключены — они относятся к уровню 2.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: molecule-pf-cp-01
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs: [/run, /tmp]
+    groups: [kubernetes, control_plane]
+
+  - name: molecule-pf-worker-01
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs: [/run, /tmp]
+    groups: [kubernetes, workers]
+
+provisioner:
+  name: ansible
+  inventory:
+    links:
+      group_vars: ../../../../molecule-shared/group_vars
+    host_vars:
+      molecule-pf-cp-01:
+        ansible_host: 10.99.0.21
+      molecule-pf-worker-01:
+        ansible_host: 10.99.0.31
+    group_vars:
+      all:
+        # Проверки, требующие реальной сети и внешних систем
+        preflight_check_connectivity: false
+        preflight_check_registry: false
+        preflight_check_git: false
+        preflight_check_helm_source: false
+        # Контейнеры заведомо не дотягивают до production-порогов
+        preflight_min_cpu: 1
+        preflight_min_ram_mb: 500
+        preflight_min_disk_root_gb: 1
+
+verifier:
+  name: ansible

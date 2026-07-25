@@ -1,0 +1,25 @@
+---
+- name: Validate join type
+  ansible.builtin.assert:
+    that:
+      - node_join_type in ['control-plane', 'worker']
+    fail_msg: "node_join_type должен быть control-plane или worker."
+    quiet: true
+
+- name: Determine whether the node has already joined
+  ansible.builtin.import_tasks: precheck.yml
+
+- name: Join the node
+  ansible.builtin.import_tasks: join.yml
+  when: not node_join_already_done | bool
+
+- name: Report skipped join
+  ansible.builtin.debug:
+    msg: "Узел уже присоединён к кластеру, kubeadm join пропущен."
+  when: node_join_already_done | bool
+
+- name: Assign node labels
+  ansible.builtin.import_tasks: assign_labels.yml
+
+- name: Verify the node
+  ansible.builtin.import_tasks: verify.yml

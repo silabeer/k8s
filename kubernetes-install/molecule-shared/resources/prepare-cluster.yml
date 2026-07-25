@@ -1,0 +1,39 @@
+---
+# Общий prepare для сценариев уровня 2, которым нужен работающий кластер.
+#
+# Поднимает минимальный стенд до состояния «узлы присоединены, CNI ещё нет»,
+# переиспользуя реальные playbook проекта. Роли, которые тестируются поверх
+# этого состояния, подключают файл из своего prepare.yml.
+
+- name: Resolve the API endpoint on the stand
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Point the API endpoint hostname at the first control-plane node
+      # На малом стенде выделенной пары LB нет: endpoint указывает
+      # непосредственно на control-plane узел. Для production так делать
+      # нельзя (раздел 3.2), но здесь проверяется не отказоустойчивость VIP.
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars[groups['control_plane'] | first].ansible_host }} {{ control_plane_endpoint_host }}"
+        regexp: ".*{{ control_plane_endpoint_host }}$"
+        state: present
+
+- name: Stage 00 — preflight checks
+  import_playbook: ../../playbooks/00-preflight.yml
+
+- name: Stage 10 — operating system preparation
+  import_playbook: ../../playbooks/10-os-prepare.yml
+
+- name: Stage 20 — containerd
+  import_playbook: ../../playbooks/20-containerd.yml
+
+- name: Stage 30 — Kubernetes packages
+  import_playbook: ../../playbooks/30-kubernetes-packages.yml
+
+- name: Stage 40 — first control-plane node
+  import_playbook: ../../playbooks/40-control-plane-init.yml
+
+- name: Stage 42 — worker nodes
+  import_playbook: ../../playbooks/42-workers-join.yml

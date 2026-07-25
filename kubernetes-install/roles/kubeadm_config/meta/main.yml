@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: kubeadm_config
+  author: platform
+  description: >-
+    Рендер конфигураций безопасности control plane (шифрование Secrets,
+    audit policy, Pod Security Admission) и kubeadm InitConfiguration.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

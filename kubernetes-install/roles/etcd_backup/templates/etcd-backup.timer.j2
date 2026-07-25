@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Scheduled etcd snapshot
+
+[Timer]
+OnCalendar={{ etcd_backup_oncalendar }}
+# Разброс, чтобы три control-plane узла не снимали snapshot одновременно
+RandomizedDelaySec={{ etcd_backup_randomized_delay }}
+# Пропущенный из-за перезагрузки запуск выполняется при старте
+Persistent=true
+
+[Install]
+WantedBy=timers.target

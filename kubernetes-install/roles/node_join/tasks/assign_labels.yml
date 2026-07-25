@@ -1,0 +1,40 @@
+---
+# Labels домена kubernetes.io назначаются от имени cluster-admin, а не
+# kubelet (B2). NodeRestriction пропускает их только из admin-контекста.
+#
+# Выполняется всегда, а не только после join: label мог быть снят вручную,
+# а platform-компоненты в GitOps используют nodeSelector по роли.
+
+- name: Assign role and domain labels to the node
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: patched
+    kind: Node
+    name: "{{ inventory_hostname }}"
+    definition:
+      metadata:
+        labels: "{{ node_join_post_labels[node_join_type] }}"
+  delegate_to: "{{ groups['control_plane'] | first }}"
+  when: node_join_post_labels[node_join_type] | length > 0
+
+- name: Verify the node-pool label survived registration
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Node
+    name: "{{ inventory_hostname }}"
+  delegate_to: "{{ groups['control_plane'] | first }}"
+  register: node_join_labeled_node
+
+- name: Assert all expected labels are present
+  vars:
+    actual: "{{ node_join_labeled_node.resources[0].metadata.labels }}"
+    expected: >-
+      {{ node_join_kubelet_labels | combine(node_join_post_labels[node_join_type]) }}
+  ansible.builtin.assert:
+    that:
+      - expected.keys() | difference(actual.keys()) | length == 0
+    fail_msg: >-
+      На узле отсутствуют labels: {{ expected.keys() | difference(actual.keys()) | list }}.
+      Если не хватает node-role.kubernetes.io/*, значит их пытались назначить
+      через kubelet --node-labels — NodeRestriction это запрещает (B2).
+    quiet: true

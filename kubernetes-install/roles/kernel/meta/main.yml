@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: kernel
+  author: platform
+  description: >-
+    Модули ядра и sysctl для узлов Kubernetes, включая полный набор значений,
+    обязательный для protectKernelDefaults: true.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+# Намеренно без зависимости от os_prepare: порядок задаётся playbook.
+# os_prepare применяется ко всем узлам, включая LB, а kernel-тюнинг под
+# Kubernetes нужен только узлам кластера (раздел 3.1 spec).
+dependencies: []

@@ -1,0 +1,51 @@
+---
+# Общий фрагмент конфигурации малого стенда (1 control-plane + 1 worker)
+# для сценариев уровня 2. Копируется в molecule.yml каждого такого сценария:
+# molecule не поддерживает включение внешних файлов в свою конфигурацию,
+# поэтому файл носит справочный характер — при правке синхронизируйте
+# сценарии, перечисленные ниже.
+#
+# Использующие сценарии:
+#   roles/control_plane_init/molecule/default
+#   roles/node_join/molecule/default
+#   roles/cilium_bootstrap/molecule/default
+#   roles/argocd_bootstrap/molecule/default
+#   roles/cluster_validation/molecule/default
+#   roles/etcd_backup/molecule/default
+#
+# Стенд поднимается из общего Vagrantfile; лишние узлы не создаются за счёт
+# переменной окружения MOLECULE_NODES.
+
+reference_platforms:
+  - name: molecule-cp-01
+    groups: [control_plane, kubernetes]
+  - name: molecule-worker-01
+    groups: [workers, kubernetes]
+
+reference_host_vars:
+  molecule-cp-01:
+    ansible_host: 192.168.121.21
+  molecule-worker-01:
+    ansible_host: 192.168.121.31
+
+reference_group_vars:
+  all:
+    api_vip: "192.168.121.21"
+    api_vip_managed: false
+    control_plane_endpoint_host: "k8s-api.molecule.test"
+    corporate_networks: ["192.168.121.0/24"]
+  control_plane:
+    etcd_disk_manage: true
+    etcd_disk_device: /dev/vdb
+    preflight_min_cpu: 2
+    preflight_min_ram_mb: 3500
+    preflight_min_disk_root_gb: 10
+    preflight_min_disk_etcd_gb: 15
+  workers:
+    preflight_min_cpu: 2
+    preflight_min_ram_mb: 3500
+    preflight_min_disk_root_gb: 10
+    node_pool: general
+
+reference_environment:
+  MOLECULE_NODES: "molecule-cp-01,molecule-worker-01"

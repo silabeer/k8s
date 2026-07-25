@@ -1,0 +1,28 @@
+---
+cilium_namespace: kube-system
+cilium_release_name: cilium
+
+# Единый источник values — GitOps-репозиторий (раздел 4.3). Собственного
+# шаблона values у Ansible нет и быть не должно: иначе bootstrap и Argo CD
+# разъедутся, и takeover покажет диффы в spec.
+cilium_values_relative_path: "values/cilium.yaml"
+
+cilium_checkout_dir: /tmp/gitops-checkout
+cilium_manifest_path: /etc/kubernetes/bootstrap/cilium-rendered.yaml
+
+# Argo CD Application, забирающая Cilium под управление (wave -10).
+# Её наличие в статусе Synced означает, что роль больше не должна
+# применять манифесты (раздел 24).
+cilium_argocd_application: cilium
+cilium_argocd_namespace: "{{ argocd.namespace }}"
+
+# Bootstrap применяет манифесты тем же field manager, которым потом работает
+# Argo CD. Тогда takeover через Server-Side Apply не порождает конфликтов
+# владения полями.
+cilium_field_manager: "{{ argocd.field_manager }}"
+
+cilium_status_retries: 40
+cilium_status_delay: 15
+
+# Ключ GitOps deploy key в секрет-бэкенде
+cilium_deploy_key_secret_key: gitops-deploy-key

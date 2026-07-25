@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: argocd_bootstrap
+  author: platform
+  description: >-
+    Установка Argo CD через helm template, создание Git credentials из
+    секрет-бэкенда и применение root Application из GitOps-репозитория.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

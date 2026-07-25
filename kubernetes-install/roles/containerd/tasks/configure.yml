@@ -1,0 +1,20 @@
+---
+- name: Create containerd directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ containerd_config_dir }}"
+    - "{{ containerd_certs_dir }}"
+
+- name: Render containerd configuration
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: "{{ containerd_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart containerd

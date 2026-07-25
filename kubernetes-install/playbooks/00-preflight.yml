@@ -1,0 +1,12 @@
+---
+# Этап 00. Проверки до изменения серверов.
+# Playbook завершается до установки Kubernetes, если хотя бы одна обязательная
+# проверка не пройдена (раздел 9.5).
+
+- name: Preflight checks
+  hosts: all
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: preflight

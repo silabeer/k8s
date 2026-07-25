@@ -1,0 +1,101 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Query CRI info
+      ansible.builtin.command:
+        cmd: crictl info -o json
+      register: crictl_info
+      changed_when: false
+
+    - name: Assert crictl info returns valid JSON
+      ansible.builtin.assert:
+        that:
+          - crictl_info.stdout | from_json is mapping
+          - (crictl_info.stdout | from_json).status is defined
+        fail_msg: "crictl info вернул невалидный JSON."
+        quiet: true
+
+    - name: Dump the effective containerd configuration
+      ansible.builtin.command:
+        cmd: containerd config dump
+      register: effective_config
+      changed_when: false
+
+    # Проверяется effective config, а не отрендеренный файл: containerd
+    # сливает конфигурацию с дефолтами, и опечатка в имени плагина проявится
+    # как молча проигнорированная секция.
+    - name: Assert systemd cgroup driver is effective
+      ansible.builtin.assert:
+        that:
+          - effective_config.stdout is search('SystemdCgroup\s*=\s*true')
+        fail_msg: >-
+          SystemdCgroup не включён в effective-конфигурации. Скорее всего,
+          имя плагина в шаблоне не соответствует версии containerd.
+        quiet: true
+
+    - name: Assert the configuration uses schema version 3
+      ansible.builtin.assert:
+        that:
+          - effective_config.stdout is search('version\s*=\s*3')
+        fail_msg: "Схема конфигурации не version = 3 — это не containerd 2.x."
+        quiet: true
+
+    - name: Assert registry mirrors are wired through config_path
+      ansible.builtin.assert:
+        that:
+          - effective_config.stdout is search('/etc/containerd/certs.d')
+        fail_msg: >-
+          config_path зеркал отсутствует. В containerd 2.x секция mirrors
+          внутри config.toml удалена, зеркала задаются только через
+          config_path и hosts.toml.
+        quiet: true
+
+    - name: Assert the sandbox image is pinned
+      ansible.builtin.assert:
+        that:
+          - effective_config.stdout is search('pause:' ~ (pause_image_tag | regex_escape))
+        fail_msg: >-
+          sandbox_image не совпадает с ожидаемым pause. Рассинхронизация
+          проявится только при пересоздании Pod.
+        quiet: true
+
+    - name: Read hosts.toml for docker.io
+      ansible.builtin.slurp:
+        src: /etc/containerd/certs.d/docker.io/hosts.toml
+      register: hosts_toml
+
+    - name: Assert hosts.toml points at the internal mirror
+      ansible.builtin.assert:
+        that:
+          - (hosts_toml.content | b64decode) is search('server = "https://docker.io"')
+          - (hosts_toml.content | b64decode) is search('proxy-docker.io')
+          - (hosts_toml.content | b64decode) is search('override_path = true')
+        fail_msg: "hosts.toml для docker.io сформирован неверно."
+        quiet: true
+
+    - name: Assert CNI plugins are installed
+      ansible.builtin.stat:
+        path: /opt/cni/bin/loopback
+      register: cni_loopback
+      failed_when: not cni_loopback.stat.exists
+
+    - name: Assert runc is installed and executable
+      ansible.builtin.command:
+        cmd: /usr/local/bin/runc --version
+      register: runc_version_out
+      changed_when: false
+      failed_when: runc_version not in runc_version_out.stdout
+
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Assert containerd is running and enabled
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services['containerd.service'].state == 'running'
+          - ansible_facts.services['containerd.service'].status == 'enabled'
+        quiet: true

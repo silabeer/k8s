@@ -1,0 +1,71 @@
+---
+# Upgrade, этап 30. Worker-узлы, последовательно:
+# drain -> обновление пакетов -> kubeadm upgrade node -> рестарт kubelet -> uncordon.
+
+- name: Upgrade worker nodes
+  hosts: workers
+  serial: 1
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Drain the node
+      ansible.builtin.command:
+        cmd: >-
+          kubectl drain {{ inventory_hostname }}
+          --ignore-daemonsets
+          --delete-emptydir-data
+          --timeout=600s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      delegate_to: "{{ groups['control_plane'] | first }}"
+      changed_when: true
+
+    - name: Unhold kubeadm package
+      ansible.builtin.dpkg_selections:
+        name: kubeadm
+        selection: install
+
+    - name: Install target kubeadm version
+      ansible.builtin.apt:
+        name: "kubeadm={{ kubernetes_target_apt_version }}"
+        state: present
+        allow_change_held_packages: true
+        update_cache: true
+
+    - name: Hold kubeadm package
+      ansible.builtin.dpkg_selections:
+        name: kubeadm
+        selection: hold
+
+    - name: Upgrade node configuration
+      ansible.builtin.command:
+        cmd: kubeadm upgrade node
+      changed_when: true
+
+    - name: Upgrade kubelet and kubectl
+      ansible.builtin.include_tasks: tasks/upgrade-node-packages.yml
+
+    - name: Wait for the node to report Ready
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Node
+        name: "{{ inventory_hostname }}"
+      delegate_to: "{{ groups['control_plane'] | first }}"
+      register: node_state
+      retries: 30
+      delay: 10
+      until:
+        - node_state.resources | length > 0
+        - node_state.resources[0].status.conditions
+          | selectattr('type', 'equalto', 'Ready')
+          | selectattr('status', 'equalto', 'True') | list | length > 0
+
+    - name: Uncordon the node
+      ansible.builtin.command:
+        cmd: "kubectl uncordon {{ inventory_hostname }}"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      delegate_to: "{{ groups['control_plane'] | first }}"
+      changed_when: true

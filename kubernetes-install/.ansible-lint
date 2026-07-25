@@ -1,0 +1,31 @@
+---
+profile: production
+
+exclude_paths:
+  - collections/
+  - .ansible_facts/
+  - molecule-shared/resources/.vagrant/
+  # Файлы секретов и справочные YAML — не playbook, линтер пытается разобрать
+  # их как список plays и падает.
+  - roles/kubeadm_config/molecule/default/secrets.yml
+  - roles/haproxy_keepalived/molecule/default/secrets.yml
+  - roles/cilium_bootstrap/molecule/default/secrets.yml
+  - roles/argocd_bootstrap/molecule/default/secrets.yml
+  - molecule-shared/resources/molecule-small-stand.yml
+
+skip_list:
+  # kubeadm/helm/cilium не имеют идемпотентных модулей; вызовы command обёрнуты
+  # собственными pre-check (раздел 24 playbook), changed_when задан явно.
+  - command-instead-of-shell
+
+# ВАЖНО: линтеры запускаются в версиях, закреплённых в requirements-test.txt.
+# На ansible-lint 6.x (например, из системного pip) проект даёт ложные ошибки:
+#   * schema[meta] на platform `noble` — Ubuntu 24.04 новее схемы, вшитой в 6.x;
+#   * jinja[invalid] в roles/preflight — нет netaddr, зависимости фильтра ipaddr.
+# Ставьте окружение через `make deps`.
+
+warn_list:
+  - experimental
+
+# Переменные ролей проверяются на префикс имени роли
+var_naming_pattern: "^[a-z_][a-z0-9_]*$"

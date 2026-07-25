@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=etcd snapshot
+Documentation=https://etcd.io/docs/latest/op-guide/recovery/
+After=kubelet.service
+
+[Service]
+Type=oneshot
+ExecStart={{ etcd_backup_script_path }}
+# Бэкап не должен конкурировать за IO с работающим etcd
+IOSchedulingClass=idle
+Nice=10

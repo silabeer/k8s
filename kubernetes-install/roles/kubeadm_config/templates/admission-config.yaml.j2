@@ -1,0 +1,32 @@
+{# {{ ansible_managed }} #}
+{#
+  Pod Security Admission (S15).
+
+  В playbook v2.0 защита workload появлялась только с policy engine в wave 0.
+  Между kubeadm init и этим моментом кластер ничем не закрыт — окно
+  закрывается встроенным PSA, который не требует установки компонентов.
+
+  kube-system выведен в исключения: static pods control plane и системные
+  DaemonSet не проходят baseline.
+-#}
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+  - name: PodSecurity
+    configuration:
+      apiVersion: pod-security.admission.config.k8s.io/v1
+      kind: PodSecurityConfiguration
+      defaults:
+        enforce: "{{ pod_security_admission_enforce }}"
+        enforce-version: "{{ pod_security_admission_enforce_version }}"
+        audit: "{{ pod_security_admission_audit }}"
+        audit-version: "latest"
+        warn: "{{ pod_security_admission_warn }}"
+        warn-version: "latest"
+      exemptions:
+        usernames: []
+        runtimeClasses: []
+        namespaces:
+{% for ns in pod_security_admission_exempt_namespaces %}
+          - "{{ ns }}"
+{% endfor %}

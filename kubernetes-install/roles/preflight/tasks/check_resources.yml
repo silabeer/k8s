@@ -1,0 +1,77 @@
+---
+- name: Assert CPU count
+  ansible.builtin.assert:
+    that:
+      - ansible_processor_vcpus | int >= preflight_min_cpu | int
+    fail_msg: >-
+      {{ ansible_processor_vcpus }} vCPU, требуется минимум {{ preflight_min_cpu }}.
+    quiet: true
+
+- name: Assert RAM size
+  ansible.builtin.assert:
+    that:
+      - ansible_memtotal_mb | int >= preflight_min_ram_mb | int
+    fail_msg: >-
+      {{ ansible_memtotal_mb }} MB RAM, требуется минимум {{ preflight_min_ram_mb }} MB.
+    quiet: true
+
+- name: Assert free space on root filesystem
+  vars:
+    root_free_gb: >-
+      {{ ((ansible_mounts | selectattr('mount', 'equalto', '/') | first).size_available
+          / 1024 / 1024 / 1024) | round(1) }}
+  ansible.builtin.assert:
+    that:
+      - root_free_gb | float >= preflight_min_disk_root_gb | float
+    fail_msg: >-
+      Свободно {{ root_free_gb }} GB на /, требуется {{ preflight_min_disk_root_gb }} GB.
+    quiet: true
+
+# Отдельный диск etcd обязателен для prod (раздел 5.2). Проверяем, что блочное
+# устройство существует и достаточного размера — до того, как os_prepare
+# попытается его смонтировать.
+- name: Check dedicated etcd disk on control-plane nodes
+  when:
+    - inventory_hostname in groups['control_plane']
+    - etcd_disk_manage | default(false) | bool
+  block:
+    - name: Assert etcd disk device is configured
+      ansible.builtin.assert:
+        that:
+          - etcd_disk_device is not none
+          - etcd_disk_device | length > 0
+        fail_msg: >-
+          etcd_disk_manage=true, но etcd_disk_device не задан.
+          Укажите устройство в group_vars/control_plane.yml или host_vars.
+        quiet: true
+
+    - name: Stat etcd disk device
+      ansible.builtin.stat:
+        path: "{{ etcd_disk_device }}"
+      register: preflight_etcd_disk
+
+    - name: Assert etcd disk device exists and is a block device
+      ansible.builtin.assert:
+        that:
+          - preflight_etcd_disk.stat.exists
+          - preflight_etcd_disk.stat.isblk | default(false)
+        fail_msg: "{{ etcd_disk_device }} не существует или не является блочным устройством."
+        quiet: true
+
+    - name: Get etcd disk size
+      ansible.builtin.set_fact:
+        preflight_etcd_disk_gb: >-
+          {{ (ansible_devices[etcd_disk_device | basename].sectors | int
+              * ansible_devices[etcd_disk_device | basename].sectorsize | int
+              / 1024 / 1024 / 1024) | round(1) }}
+      when: (etcd_disk_device | basename) in ansible_devices
+
+    - name: Assert etcd disk is large enough
+      ansible.builtin.assert:
+        that:
+          - preflight_etcd_disk_gb | float >= preflight_min_disk_etcd_gb | float
+        fail_msg: >-
+          Диск etcd {{ preflight_etcd_disk_gb }} GB,
+          требуется {{ preflight_min_disk_etcd_gb }} GB.
+        quiet: true
+      when: preflight_etcd_disk_gb is defined

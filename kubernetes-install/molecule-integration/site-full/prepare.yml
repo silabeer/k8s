@@ -1,0 +1,26 @@
+---
+- name: Prepare the test stand
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    # На стенде нет корпоративного DNS: имя API endpoint резолвится через
+    # /etc/hosts. В production эта запись создаётся заранее (раздел 5.4)
+    # и проверяется preflight.
+    - name: Point the API endpoint hostname at the VIP
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ api_vip }} {{ control_plane_endpoint_host }}"
+        regexp: ".*{{ control_plane_endpoint_host }}$"
+        state: present
+
+    - name: Report which bootstrap stages will run
+      ansible.builtin.debug:
+        msg: >-
+          Bootstrap Cilium и Argo CD
+          {{ 'выполняется' if molecule_gitops_available | default(false) | bool
+             else 'ПРОПУСКАЕТСЯ: не задан тестовый GitOps-репозиторий' }}.
+          Для полного прогона задайте MOLECULE_GITOPS_REPO и деплой-ключ
+          через CI variables, отдельные от production (раздел 25.5).
+      run_once: true

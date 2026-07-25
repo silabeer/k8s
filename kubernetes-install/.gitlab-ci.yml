@@ -1,0 +1,65 @@
+---
+stages: [lint, molecule, molecule-vm]
+
+variables:
+  PIP_INDEX_URL: "https://pypi.company.local/simple"
+  ANSIBLE_FORCE_COLOR: "true"
+
+default:
+  image: harbor.company.local/ci/ansible-molecule:latest
+  before_script:
+    - pip install -r requirements-test.txt
+    - ansible-galaxy collection install -r requirements.yml -p collections
+
+lint:
+  stage: lint
+  script:
+    - yamllint .
+    - ansible-lint
+    - make syntax
+
+molecule:
+  stage: molecule
+  parallel:
+    matrix:
+      - ROLE:
+          - preflight
+          - kernel
+          - os_prepare
+          - containerd
+          - kubernetes_packages
+          - kubeadm_config
+          - haproxy_keepalived
+  script:
+    - cd roles/${ROLE}
+    - molecule test
+  rules:
+    - changes:
+        - roles/${ROLE}/**/*
+        - requirements*.yml
+        - requirements-test.txt
+
+# VM-тесты требуют реального ядра, systemd, сети и нескольких узлов.
+# Запускаются на merge в main и по ночному расписанию.
+molecule-vm:
+  stage: molecule-vm
+  tags: [libvirt]
+  script:
+    - cd molecule-integration
+    - molecule test -s site-full
+  after_script:
+    # Стенд уничтожается всегда, чтобы не накапливать дрейф.
+    - cd molecule-integration && molecule destroy -s site-full || true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - roles/control_plane_init/**/*
+        - roles/node_join/**/*
+        - roles/cilium_bootstrap/**/*
+        - roles/argocd_bootstrap/**/*
+        - roles/cluster_validation/**/*
+        - playbooks/**/*
+
+# Секреты для тестов (тестовый OpenBao path, deploy key тестового GitOps-репо)
+# задаются CI variables и отделены от production.

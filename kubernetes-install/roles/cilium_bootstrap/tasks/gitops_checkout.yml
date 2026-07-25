@@ -1,0 +1,51 @@
+---
+# Values берутся из GitOps-репозитория без модификаций (раздел 4.3).
+
+- name: Resolve the GitOps deploy key
+  ansible.builtin.import_tasks: resolve_secrets.yml
+
+- name: Create a directory for the deploy key
+  ansible.builtin.file:
+    path: /root/.ssh
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write the deploy key
+  ansible.builtin.copy:
+    content: "{{ gitops_deploy_key }}\n"
+    dest: /root/.ssh/gitops_deploy_key
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Add the Git host to known_hosts
+  ansible.builtin.known_hosts:
+    path: /root/.ssh/known_hosts
+    name: "{{ gitops.ssh_host }}"
+    key: "{{ lookup('pipe', 'ssh-keyscan -p ' ~ gitops.ssh_port ~ ' ' ~ gitops.ssh_host) }}"
+    state: present
+
+- name: Clone the GitOps repository
+  ansible.builtin.git:
+    repo: "{{ gitops.repo_url }}"
+    dest: "{{ cilium_checkout_dir }}"
+    version: "{{ gitops.revision }}"
+    depth: 1
+    single_branch: true
+    accept_hostkey: false
+    key_file: /root/.ssh/gitops_deploy_key
+  register: cilium_gitops_clone
+
+- name: Assert the Cilium values file exists in the repository
+  ansible.builtin.stat:
+    path: "{{ cilium_checkout_dir }}/{{ gitops.cluster_path }}/{{ cilium_values_relative_path }}"
+  register: cilium_values_stat
+  failed_when: not cilium_values_stat.stat.exists
+
+- name: Record the values file path and revision
+  ansible.builtin.set_fact:
+    cilium_values_path: "{{ cilium_checkout_dir }}/{{ gitops.cluster_path }}/{{ cilium_values_relative_path }}"
+    cilium_values_revision: "{{ cilium_gitops_clone.after | default('unknown') }}"

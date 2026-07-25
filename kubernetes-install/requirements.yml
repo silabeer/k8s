@@ -1,0 +1,16 @@
+---
+# Версии закреплены. Коллекции ставятся из внутреннего Galaxy-зеркала:
+#   ansible-galaxy collection install -r requirements.yml -s https://galaxy.company.local/api/
+collections:
+  - name: kubernetes.core
+    version: "5.0.0"
+  - name: community.general
+    version: "9.5.0"
+  - name: ansible.posix
+    version: "1.6.2"
+  - name: ansible.utils
+    version: "5.1.2"
+  - name: community.crypto
+    version: "2.22.3"
+  - name: community.hashi_vault
+    version: "6.2.0"

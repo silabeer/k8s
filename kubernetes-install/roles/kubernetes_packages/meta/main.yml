@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: kubernetes_packages
+  author: platform
+  description: >-
+    Установка kubelet, kubeadm, kubectl и cri-tools закреплённых версий
+    из внутреннего зеркала, с защитой от автообновления.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

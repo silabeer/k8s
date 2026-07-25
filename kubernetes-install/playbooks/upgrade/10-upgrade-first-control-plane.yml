@@ -1,0 +1,58 @@
+---
+# Upgrade, этап 10. Первый control-plane узел: `kubeadm upgrade apply`.
+#
+# Только на первом узле выполняется `apply` — он обновляет объекты кластера
+# (ClusterConfiguration в ConfigMap, CoreDNS, kube-proxy). На остальных
+# выполняется `kubeadm upgrade node`.
+
+- name: Upgrade first control-plane node
+  hosts: control_plane[0]
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Unhold kubeadm package
+      ansible.builtin.dpkg_selections:
+        name: kubeadm
+        selection: install
+
+    - name: Install target kubeadm version
+      ansible.builtin.apt:
+        name: "kubeadm={{ kubernetes_target_apt_version }}"
+        state: present
+        allow_change_held_packages: true
+        update_cache: true
+
+    - name: Hold kubeadm package
+      ansible.builtin.dpkg_selections:
+        name: kubeadm
+        selection: hold
+
+    - name: Show upgrade plan
+      ansible.builtin.command:
+        cmd: "kubeadm upgrade plan v{{ kubernetes_target_version }}"
+      changed_when: false
+      register: upgrade_plan
+
+    - name: Report upgrade plan
+      ansible.builtin.debug:
+        var: upgrade_plan.stdout_lines
+
+    - name: Apply control plane upgrade
+      ansible.builtin.command:
+        cmd: "kubeadm upgrade apply v{{ kubernetes_target_version }} --yes"
+      changed_when: true
+
+    - name: Upgrade kubelet and kubectl
+      ansible.builtin.include_tasks: tasks/upgrade-node-packages.yml
+
+    - name: Wait for API server to become ready
+      ansible.builtin.uri:
+        url: "https://127.0.0.1:6443/readyz"
+        validate_certs: false
+        status_code: 200
+      register: readyz
+      retries: 30
+      delay: 10
+      until: readyz.status == 200

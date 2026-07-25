@@ -1,0 +1,90 @@
+---
+- name: Get all nodes
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Node
+  register: cluster_validation_nodes
+  retries: "{{ cluster_validation_retries }}"
+  delay: "{{ cluster_validation_delay }}"
+  until: cluster_validation_nodes.resources | length == groups['kubernetes'] | length
+
+- name: Assert every inventory node is registered
+  vars:
+    registered: "{{ cluster_validation_nodes.resources | map(attribute='metadata.name') | list }}"
+  ansible.builtin.assert:
+    that:
+      - groups['kubernetes'] | difference(registered) | length == 0
+    fail_msg: "Не зарегистрированы узлы: {{ groups['kubernetes'] | difference(registered) }}"
+    quiet: true
+
+- name: Assert every node is Ready
+  ansible.builtin.assert:
+    that:
+      - cluster_validation_nodes.resources
+        | map(attribute='status.conditions')
+        | map('selectattr', 'type', 'equalto', 'Ready')
+        | map('selectattr', 'status', 'equalto', 'True')
+        | map('list') | map('length')
+        | select('equalto', 0) | list | length == 0
+    fail_msg: >-
+      Не все узлы Ready. Проверьте: kubectl get nodes, kubectl -n kube-system
+      get pods -l k8s-app=cilium.
+    quiet: true
+
+- name: Assert kubelet versions match the target
+  vars:
+    versions: >-
+      {{ cluster_validation_nodes.resources
+         | map(attribute='status.nodeInfo.kubeletVersion') | unique | list }}
+  ansible.builtin.assert:
+    that:
+      - versions | length == 1
+      - versions | first is search(kubernetes_version | regex_escape)
+    fail_msg: "Версии kubelet на узлах: {{ versions }}, ожидается {{ kubernetes_version }}."
+    quiet: true
+
+- name: Assert worker nodes carry the role label
+  vars:
+    unlabeled: >-
+      {{ cluster_validation_nodes.resources
+         | selectattr('metadata.name', 'in', groups['workers'])
+         | rejectattr('metadata.labels', 'contains', 'node-role.kubernetes.io/worker')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - unlabeled | length == 0
+    fail_msg: >-
+      На worker-узлах отсутствует label node-role.kubernetes.io/worker:
+      {{ unlabeled }}. Он назначается после join от имени cluster-admin —
+      kubelet сам его выставить не может (B2).
+    quiet: true
+
+- name: Assert node-pool labels are present
+  vars:
+    unlabeled: >-
+      {{ cluster_validation_nodes.resources
+         | selectattr('metadata.name', 'in', groups['workers'])
+         | rejectattr('metadata.labels', 'contains', 'node-pool')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - unlabeled | length == 0
+    fail_msg: >-
+      На узлах отсутствует label node-pool: {{ unlabeled }}.
+      Platform-компоненты в GitOps используют по нему nodeSelector.
+    quiet: true
+
+- name: Assert control-plane nodes keep their taint
+  vars:
+    untainted: >-
+      {{ cluster_validation_nodes.resources
+         | selectattr('metadata.name', 'in', groups['control_plane'])
+         | rejectattr('spec.taints', 'defined')
+         | map(attribute='metadata.name') | list }}
+  ansible.builtin.assert:
+    that:
+      - untainted | length == 0
+    fail_msg: >-
+      На control-plane узлах снят taint: {{ untainted }}.
+      Пользовательский workload не должен на них размещаться (раздел 3.3).
+    quiet: true

@@ -1,0 +1,13 @@
+---
+# Этап 50. Bootstrap Cilium.
+#
+# Values берутся из GitOps-репозитория без модификаций — собственного шаблона
+# values у Ansible нет (раздел 4.3, требование единого источника).
+
+- name: Bootstrap Cilium CNI
+  hosts: control_plane[0]
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: cilium_bootstrap

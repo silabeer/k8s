@@ -1,0 +1,11 @@
+---
+# prepare уже выполнил kubeadm init через playbooks/40-control-plane-init.yml.
+# Converge прогоняет роль повторно — это и есть ключевой тест идемпотентности
+# из раздела 24: второй запуск не должен выполнять kubeadm init.
+- name: Converge
+  hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Apply the control_plane_init role a second time
+      ansible.builtin.include_role:
+        name: control_plane_init

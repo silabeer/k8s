@@ -1,0 +1,26 @@
+---
+# Требует тестового GitOps-репозитория с clusters/<cluster>/values/cilium.yaml
+# и деплой-ключа. Оба задаются CI variables, отдельными от production
+# (раздел 25.5):
+#
+#   MOLECULE_GITOPS_REPO — ssh URL тестового репозитория
+#   secrets.yml рядом со сценарием — деплой-ключ
+- name: Converge
+  hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Assert the test GitOps repository is configured
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'MOLECULE_GITOPS_REPO') | length > 0
+        fail_msg: >-
+          Сценарий требует тестовый GitOps-репозиторий: задайте
+          MOLECULE_GITOPS_REPO. Без него bootstrap Cilium проверить нечем —
+          values берутся из репозитория без модификаций (раздел 4.3).
+        quiet: true
+
+    # URL репозитория приходит из molecule-shared/group_vars/all.yml,
+    # который читает MOLECULE_GITOPS_REPO. Переопределять его здесь не нужно.
+    - name: Apply the cilium_bootstrap role
+      ansible.builtin.include_role:
+        name: cilium_bootstrap

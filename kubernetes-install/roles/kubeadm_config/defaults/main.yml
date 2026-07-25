@@ -1,0 +1,25 @@
+---
+kubeadm_config_dir: /etc/kubernetes
+kubeadm_init_config_path: /etc/kubernetes/kubeadm-init.yaml
+kubeadm_join_config_path: /etc/kubernetes/kubeadm-join.yaml
+kubeadm_encryption_config_path: /etc/kubernetes/encryption-config.yaml
+kubeadm_audit_policy_path: /etc/kubernetes/audit-policy.yaml
+kubeadm_admission_config_path: /etc/kubernetes/admission-config.yaml
+
+# Имена ключей шифрования. Список переопределяется playbook ротации
+# (playbooks/maintenance/rotate-etcd-encryption-key.yml), который управляет
+# порядком провайдеров вручную.
+etcd_encryption_key_name: key1
+kubeadm_encryption_keys: ~ # вычисляется в encryption_config.yml
+
+# Ключи секретов в бэкенде
+kubeadm_etcd_encryption_secret_key: etcd-encryption-key
+
+# etcd принимает версию TLS в формате TLS1.2/TLS1.3, apiserver — VersionTLS12.
+etcd_tls_min_version: TLS1.2
+
+# Ротация логов контейнеров на стороне kubelet
+kubelet_container_log_max_size: "50Mi"
+kubelet_container_log_max_files: 5
+
+kubeadm_config_validate: true

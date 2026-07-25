@@ -1,0 +1,59 @@
+---
+# Уровень 2: VM-тест на малом стенде (1 control-plane + 1 worker).
+# Роли нужны реальное ядро, systemd и работающий кластер — в контейнере
+# такой сценарий невозможен.
+#
+# Состав стенда синхронизирован с
+# molecule-shared/resources/molecule-small-stand.yml.
+#
+#   MOLECULE_PROVIDER=vagrant molecule test
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../../../requirements.yml
+
+driver:
+  name: default
+
+platforms:
+  - name: molecule-cp-01
+    groups: [control_plane, kubernetes]
+  - name: molecule-worker-01
+    groups: [workers, kubernetes]
+
+provisioner:
+  name: ansible
+  env:
+    MOLECULE_NODES: "molecule-cp-01,molecule-worker-01"
+  playbooks:
+    create: ../../../../molecule-shared/resources/create-vms.yml
+    destroy: ../../../../molecule-shared/resources/destroy-vms.yml
+  inventory:
+    links:
+      group_vars: ../../../../molecule-shared/group_vars
+    host_vars:
+      molecule-cp-01:
+        ansible_host: 192.168.121.21
+      molecule-worker-01:
+        ansible_host: 192.168.121.31
+    group_vars:
+      all:
+        api_vip: "192.168.121.21"
+        api_vip_managed: false
+        control_plane_endpoint_host: "k8s-api.molecule.test"
+        corporate_networks: ["192.168.121.0/24"]
+      control_plane:
+        etcd_disk_manage: true
+        etcd_disk_device: /dev/vdb
+        preflight_min_cpu: 2
+        preflight_min_ram_mb: 3500
+        preflight_min_disk_root_gb: 10
+        preflight_min_disk_etcd_gb: 15
+      workers:
+        preflight_min_cpu: 2
+        preflight_min_ram_mb: 3500
+        preflight_min_disk_root_gb: 10
+        node_pool: general
+
+verifier:
+  name: ansible

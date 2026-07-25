@@ -1,0 +1,49 @@
+---
+kernel_modules:
+  - overlay
+  - br_netfilter
+
+kernel_modules_conf_path: /etc/modules-load.d/99-kubernetes.conf
+kernel_sysctl_conf_path: /etc/sysctl.d/99-kubernetes.conf
+
+# Сетевые требования Kubernetes
+kernel_sysctl_networking:
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  net.ipv4.ip_forward: 1
+
+# =============================================================================
+# ОБЯЗАТЕЛЬНЫЙ набор для protectKernelDefaults: true (B1)
+#
+# При этом флаге kubelet НЕ выставляет sysctl, а падает при несовпадении.
+# Проверяется ровно шесть значений; в playbook v2.0 были перечислены три.
+#
+# Два последних отличаются от дефолтов Linux:
+#   kernel.keys.root_maxkeys  — дефолт 200
+#   kernel.keys.root_maxbytes — дефолт 20000
+# Без них kubelet не стартует НИ НА ОДНОМ узле с ошибкой вида
+#   "Invalid kernel flag: kernel/keys/root_maxkeys,
+#    expected value 1000000, actual value 200"
+# =============================================================================
+kernel_sysctl_protect_defaults:
+  vm.overcommit_memory: 1
+  vm.panic_on_oom: 0
+  kernel.panic: 10
+  kernel.panic_on_oops: 1
+  kernel.keys.root_maxkeys: 1000000
+  kernel.keys.root_maxbytes: 25000000
+
+# Лимиты inotify: дефолтов не хватает узлу с сотнями Pod — kubelet и
+# CNI-агенты держат watch на каждый смонтированный том.
+kernel_sysctl_extra:
+  fs.inotify.max_user_instances: 8192
+  fs.inotify.max_user_watches: 524288
+  fs.file-max: 2097152
+  net.core.somaxconn: 32768
+  net.ipv4.conf.all.forwarding: 1
+
+# В контейнере (molecule уровня 1) записать значения в /proc невозможно:
+# sysctl kernel.* и часть net.* находятся вне сетевого namespace.
+# Файл конфигурации при этом рендерится и проверяется.
+kernel_sysctl_enforce: >-
+  {{ ansible_virtualization_type not in ['docker', 'container', 'podman', 'containerd', 'lxc'] }}

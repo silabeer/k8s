@@ -1,0 +1,64 @@
+---
+- name: Get kubeadm version
+  ansible.builtin.command:
+    cmd: kubeadm version -o short
+  register: kubernetes_packages_kubeadm_version
+  changed_when: false
+
+- name: Get kubelet version
+  ansible.builtin.command:
+    cmd: kubelet --version
+  register: kubernetes_packages_kubelet_version
+  changed_when: false
+
+- name: Get kubectl version
+  ansible.builtin.command:
+    cmd: kubectl version --client -o yaml
+  register: kubernetes_packages_kubectl_version
+  changed_when: false
+
+- name: Assert kubeadm matches the pinned version
+  ansible.builtin.assert:
+    that:
+      - kubernetes_packages_kubeadm_version.stdout is search(kubernetes_version | regex_escape)
+    fail_msg: >-
+      kubeadm {{ kubernetes_packages_kubeadm_version.stdout }},
+      ожидается {{ kubernetes_version }}.
+    quiet: true
+
+- name: Assert kubelet matches the pinned version
+  ansible.builtin.assert:
+    that:
+      - kubernetes_packages_kubelet_version.stdout is search(kubernetes_version | regex_escape)
+    fail_msg: >-
+      kubelet {{ kubernetes_packages_kubelet_version.stdout }},
+      ожидается {{ kubernetes_version }}.
+    quiet: true
+
+# Смешивание minor-версий kubelet и kubeadm вне контролируемого upgrade
+# запрещено (раздел 13).
+- name: Assert kubelet and kubeadm share the same minor version
+  vars:
+    kubeadm_minor: "{{ kubernetes_packages_kubeadm_version.stdout | regex_search('v?(\\d+\\.\\d+)', '\\1') | first }}"
+    kubelet_minor: "{{ kubernetes_packages_kubelet_version.stdout | regex_search('v?(\\d+\\.\\d+)', '\\1') | first }}"
+  ansible.builtin.assert:
+    that:
+      - kubeadm_minor == kubelet_minor
+    fail_msg: "kubeadm {{ kubeadm_minor }} и kubelet {{ kubelet_minor }} разных minor-версий."
+    quiet: true
+
+- name: Assert packages are held
+  ansible.builtin.shell:
+    cmd: "set -o pipefail; apt-mark showhold | sort"
+  args:
+    executable: /bin/bash
+  register: kubernetes_packages_held
+  changed_when: false
+
+- name: Verify every Kubernetes package is on hold
+  ansible.builtin.assert:
+    that:
+      - item in kubernetes_packages_held.stdout_lines
+    fail_msg: "Пакет {{ item }} не защищён от автообновления (apt-mark hold)."
+    quiet: true
+  loop: "{{ kubernetes_packages_list }}"

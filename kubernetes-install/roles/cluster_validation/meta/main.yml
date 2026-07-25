@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: cluster_validation
+  author: platform
+  description: >-
+    Валидация установки: узлы, control plane, аппрув kubelet serving CSR,
+    шифрование Secrets, etcd, сеть, Argo CD, срок PKI control plane.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

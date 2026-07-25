@@ -1,0 +1,40 @@
+# Стенд для VM-тестов molecule (уровень 2).
+#
+# Используется для локальной разработки. В CI виртуалки создаются в zVirt
+# из того же golden image, что и production-узлы — см. provision-zvirt.yml.
+#
+# Размеры узлов намеренно меньше production: стенд проверяет логику ролей,
+# а не производительность.
+
+NODES = [
+  { name: "molecule-lb-01",     ip: "192.168.121.10", cpus: 1, memory: 1024,  groups: ["load_balancers"] },
+  { name: "molecule-lb-02",     ip: "192.168.121.11", cpus: 1, memory: 1024,  groups: ["load_balancers"] },
+  { name: "molecule-cp-01",     ip: "192.168.121.21", cpus: 2, memory: 4096,  groups: ["control_plane"], etcd_disk: true },
+  { name: "molecule-cp-02",     ip: "192.168.121.22", cpus: 2, memory: 4096,  groups: ["control_plane"], etcd_disk: true },
+  { name: "molecule-cp-03",     ip: "192.168.121.23", cpus: 2, memory: 4096,  groups: ["control_plane"], etcd_disk: true },
+  { name: "molecule-worker-01", ip: "192.168.121.31", cpus: 2, memory: 4096,  groups: ["workers"] },
+]
+
+Vagrant.configure("2") do |config|
+  config.vm.box = ENV.fetch("MOLECULE_VAGRANT_BOX", "generic/ubuntu2404")
+  config.ssh.insert_key = false
+
+  NODES.each do |node|
+    config.vm.define node[:name] do |vm|
+      vm.vm.hostname = node[:name]
+      vm.vm.network "private_network", ip: node[:ip]
+
+      vm.vm.provider "libvirt" do |lv|
+        lv.cpus   = node[:cpus]
+        lv.memory = node[:memory]
+        lv.cpu_mode = "host-passthrough"
+
+        # Отдельный диск под etcd: роль os_prepare монтирует его в
+        # /var/lib/etcd ДО kubeadm init.
+        if node[:etcd_disk]
+          lv.storage :file, size: "20G", device: "vdb"
+        end
+      end
+    end
+  end
+end

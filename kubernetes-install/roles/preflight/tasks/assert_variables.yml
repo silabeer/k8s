@@ -1,0 +1,85 @@
+---
+# Обязательные переменные оставлены в group_vars как `~` (null). Проверяем,
+# что они проставлены, до любого обращения к серверам.
+
+- name: Assert simple mandatory variables are set
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item, default=None) is not none
+      - lookup('vars', item, default='') | string | length > 0
+    fail_msg: >-
+      Переменная `{{ item }}` не задана.
+      Проставьте её в inventories/{{ cluster_name | default('<cluster>') }}/group_vars/all.yml
+    quiet: true
+  loop: "{{ preflight_required_vars }}"
+  run_once: true
+
+- name: Assert nested component versions are set
+  ansible.builtin.assert:
+    that:
+      - item.value is not none
+      - item.value | string | length > 0
+    fail_msg: "Переменная `{{ item.name }}` не задана."
+    quiet: true
+  loop:
+    - name: "cni.version"
+      value: "{{ cni.version }}"
+    - name: "argocd.version"
+      value: "{{ argocd.version }}"
+    - name: "gitops.repo_url"
+      value: "{{ gitops.repo_url }}"
+  loop_control:
+    label: "{{ item.name }}"
+  run_once: true
+
+- name: Assert versions do not carry a v prefix
+  ansible.builtin.assert:
+    that:
+      - not (lookup('vars', item) | string).startswith('v')
+    fail_msg: >-
+      `{{ item }}` должна быть без префикса v — шаблоны добавляют его сами
+      там, где он нужен.
+    quiet: true
+  loop:
+    - kubernetes_version
+    - containerd_version
+  run_once: true
+
+- name: Assert api_vip_interface is set when the VIP is managed here
+  ansible.builtin.assert:
+    that:
+      - api_vip_interface is not none
+      - api_vip_interface | length > 0
+    fail_msg: >-
+      api_vip_managed=true требует api_vip_interface — интерфейс, на котором
+      keepalived поднимает VIP.
+    quiet: true
+  when: api_vip_managed | bool
+  run_once: true
+
+- name: Assert secret backend is known
+  ansible.builtin.assert:
+    that:
+      - secret_backend in ['openbao', 'vault_file']
+    fail_msg: "secret_backend должен быть openbao или vault_file, получено: {{ secret_backend }}"
+    quiet: true
+  run_once: true
+
+- name: Assert etcd encryption provider is known
+  ansible.builtin.assert:
+    that:
+      - etcd_encryption_provider in ['secretbox', 'aescbc', 'kms']
+    fail_msg: >-
+      etcd_encryption_provider должен быть secretbox, aescbc или kms,
+      получено: {{ etcd_encryption_provider }}
+    quiet: true
+  run_once: true
+
+- name: Warn when a weak encryption provider is selected
+  ansible.builtin.debug:
+    msg: >-
+      ВНИМАНИЕ: выбран провайдер aescbc. CBC уязвим к padding oracle и в
+      апстрим-документации помечен как нерекомендуемый. Для нового кластера
+      используйте secretbox либо kms (раздел 14.1).
+  when: etcd_encryption_provider == 'aescbc'
+  run_once: true

@@ -1,0 +1,27 @@
+---
+# chrony предпочтён systemd-timesyncd: он корректнее ведёт себя при больших
+# скачках времени и даёт наблюдаемость через chronyc tracking.
+
+- name: Disable systemd-timesyncd
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    enabled: false
+    state: stopped
+    masked: true
+  failed_when: false
+
+- name: Render chrony configuration
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "chronyd -f %s -Q"
+  notify: Restart chrony
+
+- name: Enable and start chrony
+  ansible.builtin.systemd:
+    name: chrony
+    enabled: true
+    state: started

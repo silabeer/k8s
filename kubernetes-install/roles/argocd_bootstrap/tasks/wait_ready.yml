@@ -1,0 +1,43 @@
+---
+- name: Wait for the Application CRD to be established
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: applications.argoproj.io
+  register: argocd_app_crd
+  retries: 20
+  delay: 5
+  until:
+    - argocd_app_crd.resources | length > 0
+    - argocd_app_crd.resources[0].status.conditions
+      | selectattr('type', 'equalto', 'Established')
+      | selectattr('status', 'equalto', 'True') | list | length > 0
+
+- name: Wait for Argo CD deployments to become available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ argocd.namespace }}"
+  register: argocd_deployments
+  retries: "{{ argocd_ready_retries }}"
+  delay: "{{ argocd_ready_delay }}"
+  until:
+    - argocd_deployments.resources | length > 0
+    - argocd_deployments.resources
+      | rejectattr('status.readyReplicas', 'defined') | list | length == 0
+    - argocd_deployments.resources
+      | selectattr('status.readyReplicas', 'lt', 1) | list | length == 0
+
+- name: Wait for the application controller StatefulSet
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: StatefulSet
+    namespace: "{{ argocd.namespace }}"
+    name: argocd-application-controller
+  register: argocd_controller
+  retries: "{{ argocd_ready_retries }}"
+  delay: "{{ argocd_ready_delay }}"
+  until:
+    - argocd_controller.resources | length > 0
+    - argocd_controller.resources[0].status.readyReplicas | default(0) > 0

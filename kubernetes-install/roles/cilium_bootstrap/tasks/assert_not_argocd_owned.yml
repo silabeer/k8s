@@ -1,0 +1,36 @@
+---
+# Takeover-guard (раздел 3.3 spec).
+#
+# После того как Argo CD забрал компонент под управление, повторный прогон
+# playbook не должен трогать его ресурсы: Ansible применил бы состояние из
+# bootstrap-момента и породил дрейф, который Argo CD затем откатит обратно —
+# бесконечный цикл переприменений.
+
+- name: Look for the Argo CD Application managing Cilium
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ cilium_argocd_namespace }}"
+    name: "{{ cilium_argocd_application }}"
+  register: cilium_argocd_app
+  failed_when: false
+
+- name: Determine whether Argo CD owns Cilium
+  ansible.builtin.set_fact:
+    cilium_argocd_owned: >-
+      {{ (cilium_argocd_app.resources | default([]) | length > 0)
+         and (cilium_argocd_app.resources[0].status.sync.status | default('') == 'Synced') }}
+
+- name: Report a partially synced Application
+  # Application существует, но не Synced: takeover в процессе либо сломан.
+  # Ansible в него не вмешивается — это работа оператора.
+  ansible.builtin.debug:
+    msg: >-
+      Application {{ cilium_argocd_application }} существует, но в статусе
+      {{ cilium_argocd_app.resources[0].status.sync.status | default('неизвестно') }}.
+      Bootstrap применит манифесты, однако разберитесь, почему takeover не
+      завершён: `argocd app diff {{ cilium_argocd_application }}`.
+  when:
+    - cilium_argocd_app.resources | default([]) | length > 0
+    - not cilium_argocd_owned | bool

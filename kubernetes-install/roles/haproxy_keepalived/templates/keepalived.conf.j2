@@ -1,0 +1,46 @@
+{# {{ ansible_managed }} #}
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+}
+
+# VIP переезжает не по факту живости узла, а по факту живости haproxy:
+# узел может быть доступен, а балансировщик — мёртв.
+vrrp_script check_haproxy {
+    script "{{ keepalived_check_script_path }}"
+    interval {{ keepalived_check_interval }}
+    weight {{ keepalived_check_weight }}
+    fall {{ keepalived_check_fall }}
+    rise {{ keepalived_check_rise }}
+}
+
+vrrp_instance k8s_api {
+    state {{ keepalived_state | default('BACKUP') }}
+    interface {{ api_vip_interface }}
+    virtual_router_id {{ keepalived_virtual_router_id }}
+    priority {{ keepalived_priority }}
+    advert_int {{ keepalived_advert_int }}
+
+    # Unicast вместо multicast: во многих корпоративных сегментах
+    # multicast VRRP не проходит через коммутацию.
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+{% for host in groups['load_balancers'] if host != inventory_hostname %}
+        {{ hostvars[host].ansible_host }}
+{% endfor %}
+    }
+
+    authentication {
+        auth_type {{ keepalived_auth_type }}
+        auth_pass {{ keepalived_auth_pass }}
+    }
+
+    virtual_ipaddress {
+        {{ api_vip }}/{{ api_vip_cidr_prefix }} dev {{ api_vip_interface }}
+    }
+
+    track_script {
+        check_haproxy
+    }
+}

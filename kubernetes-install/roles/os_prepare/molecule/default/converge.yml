@@ -1,0 +1,8 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  tasks:
+    - name: Apply the os_prepare role
+      ansible.builtin.include_role:
+        name: os_prepare

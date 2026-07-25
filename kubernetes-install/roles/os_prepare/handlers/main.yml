@@ -1,0 +1,17 @@
+---
+- name: Restart chrony
+  ansible.builtin.systemd:
+    name: chrony
+    state: restarted
+
+- name: Restart journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+
+# containerd может быть ещё не установлен — на этапе 10 это нормально.
+- name: Restart containerd if running
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+  failed_when: false

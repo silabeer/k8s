@@ -1,0 +1,74 @@
+---
+# Расхождение времени между узлами ломает TLS и выборы лидера в etcd.
+
+- name: Detect time synchronisation service
+  ansible.builtin.service_facts:
+
+- name: Determine active time sync service
+  ansible.builtin.set_fact:
+    preflight_timesync_service: >-
+      {{ 'chrony.service' if 'chrony.service' in ansible_facts.services
+         else ('chronyd.service' if 'chronyd.service' in ansible_facts.services
+         else ('systemd-timesyncd.service' if 'systemd-timesyncd.service' in ansible_facts.services
+         else '')) }}
+
+- name: Warn when no time synchronisation service is installed
+  # Не блокирует установку: chrony ставит роль os_prepare. Но фактическое
+  # расхождение часов проверяется ниже и уже блокирует.
+  ansible.builtin.debug:
+    msg: >-
+      Ни chrony, ни systemd-timesyncd не установлены.
+      Служба будет настроена ролью os_prepare.
+  when: preflight_timesync_service | length == 0
+
+- name: Assert time synchronisation service is running
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services[preflight_timesync_service].state == 'running'
+    fail_msg: >-
+      {{ preflight_timesync_service }} не запущен
+      (состояние: {{ ansible_facts.services[preflight_timesync_service].state }}).
+    quiet: true
+  when: preflight_timesync_service | length > 0
+
+- name: Get node clock
+  ansible.builtin.command:
+    cmd: date +%s
+  register: preflight_node_epoch
+  changed_when: false
+
+- name: Assert clock offset against the control machine is acceptable
+  vars:
+    controller_epoch: "{{ lookup('pipe', 'date +%s') | int }}"
+    offset: "{{ (preflight_node_epoch.stdout | int) - (controller_epoch | int) }}"
+  ansible.builtin.assert:
+    that:
+      - offset | int | abs <= (preflight_ntp_max_offset | int) + 2
+    fail_msg: >-
+      Часы узла расходятся с управляющей машиной на {{ offset }} с
+      (допустимо {{ preflight_ntp_max_offset }} с плюс сетевая задержка).
+    quiet: true
+
+- name: Check NTP servers reachability
+  ansible.builtin.wait_for:
+    host: "{{ item }}"
+    port: 123
+    timeout: "{{ preflight_connect_timeout }}"
+    state: started
+  loop: "{{ ntp_servers }}"
+  # NTP работает по UDP, wait_for проверяет TCP — многие NTP-серверы его не
+  # слушают. Проверка информационная, отказ не блокирует установку.
+  failed_when: false
+  changed_when: false
+  register: preflight_ntp_reach
+
+- name: Report unreachable NTP servers
+  ansible.builtin.debug:
+    msg: >-
+      NTP-серверы, не ответившие на TCP/123 (проверка информационная,
+      NTP использует UDP): {{ preflight_ntp_reach.results
+      | selectattr('failed', 'defined') | selectattr('failed')
+      | map(attribute='item') | list }}
+  when: >-
+    preflight_ntp_reach.results | selectattr('failed', 'defined')
+    | selectattr('failed') | list | length > 0

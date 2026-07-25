@@ -1,0 +1,27 @@
+---
+# binary  — tarball с внутреннего artifact storage (дефолт: containerd 2.x
+#           отсутствует в репозиториях дистрибутивов)
+# package — apt-пакет из внутреннего репозитория
+containerd_install_method: binary
+
+containerd_bin_dir: /usr/local/bin
+containerd_config_dir: /etc/containerd
+containerd_config_path: /etc/containerd/config.toml
+containerd_certs_dir: /etc/containerd/certs.d
+containerd_root: /var/lib/containerd
+containerd_state: /run/containerd
+containerd_socket: /run/containerd/containerd.sock
+
+containerd_cni_bin_dir: /opt/cni/bin
+containerd_cni_conf_dir: /etc/cni/net.d
+
+# Один cgroup driver для kubelet и runtime — systemd (раздел 12).
+containerd_systemd_cgroup: true
+containerd_snapshotter: overlayfs
+
+containerd_package_name: containerd.io
+containerd_apt_version: ~ # обязателен при containerd_install_method=package
+
+# Тестовый образ для проверки работы зеркала после установки
+containerd_verify_pull_image: "{{ pause_image }}"
+containerd_verify_pull: true

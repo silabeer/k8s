@@ -1,0 +1,82 @@
+---
+# Роль preflight не меняет состояние — проверяется, что её логика ловит
+# ошибки, а не что она что-то создала. Каждый блок намеренно ломает одну
+# переменную и убеждается, что assert срабатывает.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Missing mandatory variable is detected
+      block:
+        - name: Run variable assertions with kubernetes_version unset
+          ansible.builtin.include_role:
+            name: preflight
+            tasks_from: assert_variables
+          vars:
+            kubernetes_version: ~
+
+        - name: Fail if the missing version went unnoticed
+          ansible.builtin.fail:
+            msg: >-
+              preflight пропустил незаданную kubernetes_version — fail-fast
+              не работает (раздел 3.4 spec).
+      rescue:
+        - name: Expected failure on the missing version
+          ansible.builtin.debug:
+            msg: "Незаданная kubernetes_version корректно отклонена."
+
+    - name: Version with a v prefix is detected
+      block:
+        - name: Run variable assertions with a v-prefixed version
+          ansible.builtin.include_role:
+            name: preflight
+            tasks_from: assert_variables
+          vars:
+            kubernetes_version: "v1.31.4"
+
+        - name: Fail if the v prefix went unnoticed
+          ansible.builtin.fail:
+            msg: "preflight пропустил версию с префиксом v."
+      rescue:
+        - name: Expected failure on the v prefix
+          ansible.builtin.debug:
+            msg: "Версия с префиксом v корректно отклонена."
+
+    - name: Overlapping CIDRs are detected
+      block:
+        - name: Run network checks with an overlapping Pod CIDR
+          ansible.builtin.include_role:
+            name: preflight
+            tasks_from: check_network
+          vars:
+            # Пересекается с corporate_networks 10.99.0.0/16
+            pod_network_cidr: "10.99.0.0/24"
+
+        - name: Fail if the overlap went unnoticed
+          ansible.builtin.fail:
+            msg: >-
+              preflight пропустил пересечение Pod CIDR с корпоративной сетью.
+              После установки это лечится только пересозданием кластера.
+      rescue:
+        - name: Expected failure on the CIDR overlap
+          ansible.builtin.debug:
+            msg: "Пересечение Pod CIDR корректно отклонено."
+
+    - name: Unknown encryption provider is detected
+      block:
+        - name: Run variable assertions with a bogus provider
+          ansible.builtin.include_role:
+            name: preflight
+            tasks_from: assert_variables
+          vars:
+            etcd_encryption_provider: rot13
+
+        - name: Fail if the bogus provider went unnoticed
+          ansible.builtin.fail:
+            msg: "preflight пропустил неизвестный etcd_encryption_provider."
+      rescue:
+        - name: Expected failure on the bogus provider
+          ansible.builtin.debug:
+            msg: "Неизвестный провайдер шифрования корректно отклонён."

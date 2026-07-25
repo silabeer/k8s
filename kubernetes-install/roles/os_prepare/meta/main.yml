@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: os_prepare
+  author: platform
+  description: >-
+    Подготовка операционной системы: hostname, DNS, пакеты, NTP, swap,
+    firewall, logrotate, корневые CA, монтирование диска etcd.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+# Роль kernel применяется отдельно и только к группе kubernetes — см.
+# playbooks/10-os-prepare.yml и раздел 3.1 spec.
+dependencies: []

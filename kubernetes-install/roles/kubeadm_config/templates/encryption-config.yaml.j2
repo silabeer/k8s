@@ -1,0 +1,45 @@
+{# {{ ansible_managed }} #}
+{#
+  Порядок провайдеров значим: apiserver ПИШЕТ первым, а ЧИТАЕТ любым из
+  перечисленных. Поэтому при ротации ключа новый сначала добавляется вторым
+  (все apiserver учатся читать), и только потом переставляется первым
+  (см. playbooks/maintenance/rotate-etcd-encryption-key.yml).
+
+  identity в конце оставлен намеренно: без него apiserver не сможет прочитать
+  Secrets, записанные до включения шифрования.
+-#}
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+{% for resource in etcd_encryption_resources %}
+      - {{ resource }}
+{% endfor %}
+    providers:
+{% if etcd_encryption_provider == 'kms' %}
+      - kms:
+          apiVersion: v2
+          name: {{ etcd_kms_name }}
+          endpoint: {{ etcd_kms_endpoint }}
+          timeout: {{ etcd_kms_timeout }}
+{% elif etcd_encryption_provider == 'secretbox' %}
+      - secretbox:
+          keys:
+{% for key in etcd_encryption_keys %}
+            - name: {{ key.name }}
+              secret: {{ key.secret }}
+{% endfor %}
+{% elif etcd_encryption_provider == 'aescbc' %}
+{#
+  aescbc оставлен для совместимости с существующими кластерами. CBC уязвим
+  к padding oracle и в апстрим-документации помечен как нерекомендуемый —
+  для нового кластера используйте secretbox или kms.
+-#}
+      - aescbc:
+          keys:
+{% for key in etcd_encryption_keys %}
+            - name: {{ key.name }}
+              secret: {{ key.secret }}
+{% endfor %}
+{% endif %}
+      - identity: {}

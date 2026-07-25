@@ -1,0 +1,23 @@
+---
+# Этап 40. Инициализация первого control-plane узла.
+#
+# Конфигурации безопасности (encryption-config, audit-policy, admission-config)
+# размещаются на ВСЕХ control-plane узлах до init: присоединяемые узлы поднимают
+# apiserver с теми же extraArgs из ClusterConfiguration и упадут, если файлов нет
+# (раздел 15).
+
+- name: Render control-plane security and kubeadm configuration
+  hosts: control_plane
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: kubeadm_config
+
+- name: Initialize first control-plane node
+  hosts: control_plane[0]
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  roles:
+    - role: control_plane_init
