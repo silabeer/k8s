@@ -26,3 +26,10 @@ cilium_status_delay: 15
 
 # Ключ GitOps deploy key в секрет-бэкенде
 cilium_deploy_key_secret_key: gitops-deploy-key
+
+# Способ доступа к GitOps-репозиторию определяется по самому URL.
+#
+# ssh://... или git@... — нужен деплой-ключ (production-схема раздела 18.2).
+# https://...           — ключ не нужен: для публичного репозитория доступ
+#                         анонимный, и требовать приватный ключ бессмысленно.
+gitops_url_is_ssh: "{{ gitops.repo_url is match('^(ssh://|git@)') }}"

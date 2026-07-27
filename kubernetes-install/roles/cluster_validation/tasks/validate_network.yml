@@ -34,7 +34,7 @@
             restartPolicy: Never
             containers:
               - name: probe
-                image: "{{ registry_host }}/k8s/e2e-test-images/agnhost:2.53"
+                image: "{{ cluster_validation_probe_image }}"
                 command: ["sleep", "600"]
                 securityContext:
                   allowPrivilegeEscalation: false

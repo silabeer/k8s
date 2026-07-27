@@ -14,7 +14,18 @@ cluster_validation_check_storage: false
 cluster_validation_cilium_connectivity: false
 
 cluster_validation_test_namespace: cluster-validation
+
+# Образ для smoke-проверок сети и storage.
+#
+# Путь строится от image_repository — той же переменной, из которой kubeadm
+# берёт системные образы. Поэтому он одинаково верен и для зеркала в Harbor
+# (harbor/k8s/...), и для прямого registry.k8s.io. Собирать его из
+# registry_host с жёстким префиксом /k8s нельзя: у публичного реестра
+# такого уровня нет.
+cluster_validation_probe_image: "{{ image_repository }}/e2e-test-images/agnhost:2.53"
 cluster_validation_encryption_secret: encryption-check
+# Значение, наличие которого в открытом виде означало бы отсутствие шифрования
+cluster_validation_encryption_canary: encryption-validation-canary
 
 # =============================================================================
 # Профиль cilium connectivity test для закрытого контура (раздел 17).

@@ -1,6 +1,12 @@
 ---
 # Проверяется факт шифрования в etcd, а не наличие флага у apiserver:
 # конфигурация может быть подключена, но не покрывать нужные ресурсы.
+#
+# Значение из etcd НЕ затягивается в переменную целиком: зашифрованный
+# объект — двоичные данные, и Ansible отказывается их десериализовать
+# («Refusing to deserialize an invalid UTF8 string value»). Поэтому на
+# стороне узла из вывода извлекается только ASCII: префикс шифрования
+# и признак присутствия открытого текста.
 
 - name: Create a test secret
   kubernetes.core.k8s:
@@ -13,20 +19,44 @@
         name: "{{ cluster_validation_encryption_secret }}"
         namespace: default
       stringData:
-        canary: encryption-validation
+        canary: "{{ cluster_validation_encryption_canary }}"
 
-- name: Read the raw value from etcd
-  ansible.builtin.command:
+- name: Read the encryption prefix from etcd
+  ansible.builtin.shell:
     cmd: >-
+      set -o pipefail;
       kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
       etcdctl
       --cacert=/etc/kubernetes/pki/etcd/ca.crt
       --cert=/etc/kubernetes/pki/etcd/server.crt
       --key=/etc/kubernetes/pki/etcd/server.key
       get /registry/secrets/default/{{ cluster_validation_encryption_secret }}
+      | grep -aoE 'k8s:enc:[a-z0-9]+:v[0-9]+:[A-Za-z0-9_-]+'
+      | head -1
+  args:
+    executable: /bin/bash
   environment:
     KUBECONFIG: "{{ kubeconfig_path }}"
-  register: cluster_validation_etcd_raw
+  register: cluster_validation_enc_prefix
+  changed_when: false
+
+- name: Check whether the plaintext value is present in etcd
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
+      etcdctl
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt
+      --cert=/etc/kubernetes/pki/etcd/server.crt
+      --key=/etc/kubernetes/pki/etcd/server.key
+      get /registry/secrets/default/{{ cluster_validation_encryption_secret }}
+      | grep -aq '{{ cluster_validation_encryption_canary }}'
+      && echo PLAINTEXT_FOUND || echo PLAINTEXT_ABSENT
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cluster_validation_enc_plaintext
   changed_when: false
 
 - name: Assert the secret is encrypted at rest
@@ -34,13 +64,17 @@
     expected_prefix: "k8s:enc:{{ etcd_encryption_provider }}:v1:"
   ansible.builtin.assert:
     that:
-      - cluster_validation_etcd_raw.stdout is search(expected_prefix | regex_escape)
-      - "'encryption-validation' not in cluster_validation_etcd_raw.stdout"
+      - cluster_validation_enc_prefix.stdout is search(expected_prefix | regex_escape)
+      - cluster_validation_enc_plaintext.stdout | trim == 'PLAINTEXT_ABSENT'
     fail_msg: >-
-      Secret в etcd не зашифрован: ожидался префикс {{ expected_prefix }}.
+      Secret в etcd не зашифрован. Ожидался префикс {{ expected_prefix }},
+      получено «{{ cluster_validation_enc_prefix.stdout | default('ничего') }}»;
+      открытый текст {{ 'НАЙДЕН' if cluster_validation_enc_plaintext.stdout | trim
+      == 'PLAINTEXT_FOUND' else 'не найден' }}.
       Проверьте --encryption-provider-config в манифесте kube-apiserver и то,
       что resources в encryption-config включают secrets.
-    success_msg: "Secrets в etcd зашифрованы провайдером {{ etcd_encryption_provider }}."
+    success_msg: >-
+      Secrets в etcd зашифрованы: {{ cluster_validation_enc_prefix.stdout }}
     quiet: true
 
 - name: Remove the test secret

@@ -1,30 +1,36 @@
 ---
-- name: Resolve the GitOps deploy key
-  ansible.builtin.import_tasks: resolve_secrets.yml
+# Работа с ключом нужна только для доступа по SSH. Для публичного
+# репозитория по HTTPS ключа нет и быть не должно.
 
-- name: Create a directory for the deploy key
-  ansible.builtin.file:
-    path: /root/.ssh
-    state: directory
-    owner: root
-    group: root
-    mode: "0700"
+- name: Prepare SSH access to the GitOps repository
+  when: gitops_url_is_ssh | bool
+  block:
+    - name: Resolve the GitOps deploy key
+      ansible.builtin.import_tasks: resolve_secrets.yml
 
-- name: Write the deploy key
-  ansible.builtin.copy:
-    content: "{{ gitops_deploy_key }}\n"
-    dest: /root/.ssh/gitops_deploy_key
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
+    - name: Create a directory for the deploy key
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
 
-- name: Add the Git host to known_hosts
-  ansible.builtin.known_hosts:
-    path: /root/.ssh/known_hosts
-    name: "{{ gitops.ssh_host }}"
-    key: "{{ lookup('pipe', 'ssh-keyscan -p ' ~ gitops.ssh_port ~ ' ' ~ gitops.ssh_host) }}"
-    state: present
+    - name: Write the deploy key
+      ansible.builtin.copy:
+        content: "{{ gitops_deploy_key }}\n"
+        dest: /root/.ssh/gitops_deploy_key
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Add the Git host to known_hosts
+      ansible.builtin.known_hosts:
+        path: /root/.ssh/known_hosts
+        name: "{{ gitops.ssh_host }}"
+        key: "{{ lookup('pipe', 'ssh-keyscan -p ' ~ gitops.ssh_port ~ ' ' ~ gitops.ssh_host) }}"
+        state: present
 
 - name: Clone the GitOps repository
   ansible.builtin.git:
@@ -34,7 +40,7 @@
     depth: 1
     single_branch: true
     accept_hostkey: false
-    key_file: /root/.ssh/gitops_deploy_key
+    key_file: "{{ '/root/.ssh/gitops_deploy_key' if gitops_url_is_ssh | bool else omit }}"
 
 - name: Assert the Argo CD values file exists
   ansible.builtin.stat:

@@ -108,12 +108,13 @@ argocd:
 # -----------------------------------------------------------------------------
 # GitOps
 #
-# ЗАПОЛНИТЬ перед этапами 50 и 60. Заготовка репозитория — в gitops-test/
-# корня проекта. Пока repo_url не задан, эти этапы запускать нельзя:
-# values для Cilium и Argo CD берутся только оттуда (раздел 4.3).
+# Заготовка содержимого — в gitops-test/ корня проекта.
+# values для Cilium и Argo CD берутся только отсюда (раздел 4.3).
 # -----------------------------------------------------------------------------
 gitops:
-  repo_url: ~
+  # Публичный репозиторий по HTTPS: аутентификация не нужна, деплой-ключ
+  # не создаётся. Роли определяют способ доступа по схеме URL.
+  repo_url: "https://github.com/silabeer/argocd-test"
   revision: main
   cluster_path: "clusters/{{ cluster_name }}"
   ssh_host: ~
@@ -202,7 +203,6 @@ os_no_proxy: "localhost,127.0.0.1,10.129.0.0/24,{{ pod_network_cidr }},{{ servic
 # Отдельного диска под etcd нет — на ВМ только vda.
 etcd_disk_manage: false
 
-# Репозиторий GitOps появится позже: этапы 00-42 его не используют.
-# ОБЯЗАТЕЛЬНО вернуть в true перед этапами 50 и 60.
-preflight_require_gitops: false
+preflight_require_gitops: true
+# Проверка доступности Git по SSH-порту неприменима к публичному HTTPS.
 preflight_check_git: false
