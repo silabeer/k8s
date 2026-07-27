@@ -5,21 +5,52 @@
 # с TTL 30 минут, получает CA hash и (для control-plane) заново загружает
 # сертификаты через `kubeadm init phase upload-certs`.
 #
-#   ansible-playbook playbooks/maintenance/add-node.yml --limit k8s-worker-04
+#   ansible-playbook playbooks/maintenance/add-node.yml -e new_node=k8s-worker-04
 #
 # Узел должен быть предварительно описан в inventory.
+#
+# Используется -e new_node, а НЕ --limit. Ограничение --limit исключило бы
+# остальные узлы из прогона, и preflight не смог бы выполнить проверки,
+# которые сравнивают узлы между собой: уникальность hostname, единство
+# версии ОС и MTU (раздел 5.1). Факты этих узлов просто не были бы собраны,
+# и обращение к ним через hostvars дало бы undefined.
+
+- name: Validate parameters
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require new_node
+      ansible.builtin.assert:
+        that:
+          - new_node is defined
+          - new_node in groups['kubernetes']
+        fail_msg: >-
+          Укажите -e new_node=<hostname из inventory>. Узел должен быть
+          заранее описан в inventory и входить в группу control_plane
+          или workers.
+        quiet: true
+
+# Факты собираются со ВСЕХ узлов кластера, но ничего не меняется: без них
+# межузловые проверки preflight работать не могут.
+- name: Gather facts from the whole cluster
+  hosts: kubernetes
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+  tasks: []
 
 - name: Preflight for the new node
-  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
-  gather_facts: true
+  hosts: "{{ new_node | default('nonexistent-host') }}"
+  gather_facts: false
   any_errors_fatal: true
   become: true
   roles:
     - role: preflight
 
 - name: Prepare operating system on the new node
-  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
-  gather_facts: true
+  hosts: "{{ new_node | default('nonexistent-host') }}"
+  gather_facts: false
   any_errors_fatal: true
   become: true
   roles:
@@ -28,9 +59,9 @@
     - role: containerd
     - role: kubernetes_packages
 
-- name: Render kubeadm security configuration on new control-plane node
-  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
-  gather_facts: true
+- name: Render kubeadm security configuration on a new control-plane node
+  hosts: "{{ new_node | default('nonexistent-host') }}"
+  gather_facts: false
   any_errors_fatal: true
   become: true
   roles:
@@ -38,8 +69,8 @@
       when: inventory_hostname in groups['control_plane']
 
 - name: Join the new node
-  hosts: "{{ ansible_limit | default('nonexistent-host') }}"
-  gather_facts: true
+  hosts: "{{ new_node | default('nonexistent-host') }}"
+  gather_facts: false
   any_errors_fatal: true
   become: true
   roles:
@@ -55,20 +86,41 @@
       kubernetes.core.k8s_info:
         kubeconfig: "{{ kubeconfig_path }}"
         kind: Node
-        name: "{{ ansible_limit }}"
-      register: new_node
+        name: "{{ new_node }}"
+      register: new_node_state
       retries: 30
       delay: 10
       until:
-        - new_node.resources | length > 0
-        - new_node.resources[0].status.conditions
+        - new_node_state.resources | length > 0
+        - new_node_state.resources[0].status.conditions
           | selectattr('type', 'equalto', 'Ready')
           | selectattr('status', 'equalto', 'True') | list | length > 0
 
+    - name: Check for pending serving CSRs from the new node
+      # До установки kubelet-csr-approver (wave -10) CSR приходится
+      # аппрувить вручную, иначе kubectl exec и logs на этом узле
+      # не заработают (раздел 14.4).
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: certificates.k8s.io/v1
+        kind: CertificateSigningRequest
+      register: new_node_csrs
+
     - name: Report node state
+      vars:
+        pending: >-
+          {{ new_node_csrs.resources
+             | selectattr('spec.signerName', 'equalto', 'kubernetes.io/kubelet-serving')
+             | rejectattr('status.conditions', 'defined')
+             | selectattr('spec.username', 'equalto', 'system:node:' ~ new_node)
+             | map(attribute='metadata.name') | list }}
       ansible.builtin.debug:
         msg: >-
-          Узел {{ ansible_limit }} присоединён и Ready.
-          Serving-сертификат kubelet аппрувится автоматически через
-          kubelet-csr-approver (wave -10). Проверить:
-          kubectl get csr | grep {{ ansible_limit }}
+          Узел {{ new_node }} присоединён и Ready.
+          {% if pending | length > 0 %}
+          Ожидают аппрува serving-CSR: {{ pending }}. Пока не установлен
+          kubelet-csr-approver, выполните:
+          ansible-playbook playbooks/70-validation.yml --tags validation_csr
+          {% else %}
+          Pending serving-CSR нет.
+          {% endif %}
