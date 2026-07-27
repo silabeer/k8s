@@ -3,7 +3,7 @@
 
 - name: Assert hostnames are unique
   vars:
-    all_hostnames: "{{ groups['all'] | map('extract', hostvars, 'ansible_hostname') | list }}"
+    all_hostnames: "{{ cluster_hosts | map('extract', hostvars, 'ansible_hostname') | list }}"
   ansible.builtin.assert:
     that:
       - all_hostnames | length == all_hostnames | unique | length
@@ -28,7 +28,7 @@
 
 - name: Assert node addresses are unique
   vars:
-    all_ips: "{{ groups['all'] | map('extract', hostvars, 'node_ip') | list }}"
+    all_ips: "{{ cluster_hosts | map('extract', hostvars, 'node_ip') | list }}"
   ansible.builtin.assert:
     that:
       - all_ips | length == all_ips | unique | length

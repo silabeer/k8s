@@ -24,17 +24,16 @@ platforms:
 
 provisioner:
   name: ansible
+  # Сценарий лежит внутри роли, и molecule не добавляет каталог roles/
+  # в путь поиска — без этого роль не находится по имени.
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
   inventory:
+    # molecule игнорирует inline host_vars/group_vars, когда задан links,
+    # поэтому переменные сценария лежат файлами в inventory/.
+    # Общий набор подключён симлинком inventory/group_vars/all/00-shared.yml.
     links:
-      group_vars: ../../../../molecule-shared/group_vars
-    host_vars:
-      molecule-containerd-01:
-        node_ip: 10.99.0.21
-    group_vars:
-      all:
-        # Pull тестового образа требует доступа к Harbor и рабочих зеркал.
-        # Включать в CI, где такой доступ есть.
-        containerd_verify_pull: false
-
+      group_vars: inventory/group_vars
+      host_vars: inventory/host_vars
 verifier:
   name: ansible

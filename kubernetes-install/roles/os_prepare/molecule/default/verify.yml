@@ -49,8 +49,10 @@
     - name: Assert cluster nodes are present in /etc/hosts
       ansible.builtin.assert:
         that:
-          - (hosts_file.content | b64decode) is search('ANSIBLE MANAGED: kubernetes cluster')
-          - (hosts_file.content | b64decode) is search('10.99.0.21\s+molecule-osprep-cp-01')
+          # Кавычки обязательны: `: ` внутри незакавыченного элемента делает
+          # его отображением, и Ansible отвергает условие как не-строку.
+          - "(hosts_file.content | b64decode) is search('ANSIBLE MANAGED: kubernetes cluster')"
+          - "(hosts_file.content | b64decode) is search('10.99.0.21\\s+molecule-osprep-cp-01')"
         fail_msg: "Блок с узлами кластера не добавлен в /etc/hosts."
         quiet: true
 

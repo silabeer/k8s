@@ -69,7 +69,9 @@
       - api_vip in preflight_endpoint_dns.stdout
     fail_msg: >-
       {{ control_plane_endpoint_host }} резолвится не в api_vip ({{ api_vip }}).
-      Получено: {{ preflight_endpoint_dns.stdout_lines | first | default('') }}.
+      {# Индекс, а не фильтр first: по пустому списку first роняет рендер
+         самого сообщения, и настоящая причина отказа теряется. #}
+      Получено: {{ preflight_endpoint_dns.stdout_lines[0] | default('пустой ответ') }}.
       Указывать IP первого control-plane узла как controlPlaneEndpoint нельзя
       (раздел 3.2).
     quiet: true
@@ -96,7 +98,7 @@
 - name: Check connectivity to every other cluster node
   ansible.builtin.command:
     cmd: "ping -c 2 -W {{ preflight_connect_timeout }} {{ hostvars[item].node_ip }}"
-  loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
+  loop: "{{ cluster_hosts | difference([inventory_hostname]) }}"
   register: preflight_ping
   changed_when: false
   failed_when: preflight_ping.rc != 0
@@ -128,7 +130,9 @@
       Рассинхронизация MTU между узлами даёт трудноуловимые обрывы
       туннелированного трафика Cilium.
     quiet: true
-  when: inventory_hostname in groups['kubernetes']
+  when:
+    - preflight_check_mtu | bool
+    - inventory_hostname in groups['kubernetes']
 
 - name: Assert MTU is identical across cluster nodes
   vars:
@@ -140,4 +144,5 @@
       - mtus | length == 1
     fail_msg: "Узлы кластера имеют разный MTU: {{ mtus }}"
     quiet: true
+  when: preflight_check_mtu | bool
   run_once: true

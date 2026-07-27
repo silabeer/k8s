@@ -11,6 +11,10 @@ platforms:
   - name: molecule-osprep-cp-01
     image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
     command: /lib/systemd/systemd
+    # systemd в контейнере требует privileged: без него init не может
+    # управлять cgroup и падает сразу. Это относится и к контейнерам,
+    # которые не запускают Kubernetes.
+    privileged: true
     cgroupns_mode: host
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
@@ -19,14 +23,16 @@ platforms:
 
 provisioner:
   name: ansible
+  # Сценарий лежит внутри роли, и molecule не добавляет каталог roles/
+  # в путь поиска — без этого роль не находится по имени.
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
   inventory:
+    # molecule игнорирует inline host_vars/group_vars, когда задан links,
+    # поэтому переменные сценария лежат файлами в inventory/.
+    # Общий набор подключён симлинком inventory/group_vars/all/00-shared.yml.
     links:
-      group_vars: ../../../../molecule-shared/group_vars
-    host_vars:
-      molecule-osprep-cp-01:
-        node_ip: 10.99.0.21
-    # Отключение hostname, swap и диска etcd задано в общем файле
-    # molecule-shared/group_vars/all.yml вместе с объяснением причин.
-
+      group_vars: inventory/group_vars
+      host_vars: inventory/host_vars
 verifier:
   name: ansible

@@ -1,0 +1,8 @@
+---
+# Переменные сценария. Вынесены в файл, потому что molecule игнорирует
+# inline host_vars/group_vars при заданном links.
+api_vip_managed: true
+api_vip_interface: eth0
+haproxy_manage_services: false
+haproxy_package_version: '*'
+keepalived_package_version: '*'

@@ -191,3 +191,16 @@ kubelet_protect_kernel_defaults: "{{ lookup('env', 'MOLECULE_HOST_SYSCTLS_SET') 
 
 # hostname контейнера задаёт Docker
 os_prepare_manage_hostname: false
+
+# Проверки preflight, которым нужны внутренние зеркала и реальная сетевая
+# инфраструктура. В контейнерном стенде их нет.
+preflight_check_package_repo: false
+preflight_check_artifacts: false
+# MTU в контейнере задаёт Docker, с производственным значением он не совпадает.
+preflight_check_mtu: false
+# В контейнере время принадлежит хосту: свой NTP-демон не нужен и не стартует.
+# Фактическое расхождение часов при этом проверяется.
+preflight_check_timesync_service: false
+# /etc/hosts в контейнере — bind-mount, атомарная замена через rename
+# невозможна (EBUSY).
+os_prepare_hosts_unsafe_writes: true

@@ -23,6 +23,7 @@ deps:
 lint:
 	yamllint .
 	ansible-lint
+	python3 scripts/check-assert-conditions.py
 
 # Молчаливая опечатка в import_playbook ловится только здесь, до выезда на стенд.
 syntax:

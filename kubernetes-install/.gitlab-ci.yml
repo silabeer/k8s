@@ -20,6 +20,7 @@ lint:
   script:
     - yamllint .
     - ansible-lint
+    - python3 scripts/check-assert-conditions.py
     - make syntax
 
 # Роли, меняющие конфигурацию ОС. Обычные контейнеры, быстрые, на каждый MR.

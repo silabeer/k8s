@@ -17,7 +17,14 @@
     owner: root
     group: root
     mode: "0644"
-    validate: "chronyd -f %s -Q"
+    # -p печатает разобранную конфигурацию и выходит — это и есть проверка
+    # синтаксиса.
+    #
+    # НЕ -Q: тот не проверяет конфигурацию, а выполняет реальный опрос
+    # указанных NTP-серверов и ждёт ответа. При недоступном NTP задача
+    # висит бесконечно, подвешивая весь os_prepare ещё до установки
+    # Kubernetes.
+    validate: "chronyd -f %s -p"
   notify: Restart chrony
 
 - name: Enable and start chrony

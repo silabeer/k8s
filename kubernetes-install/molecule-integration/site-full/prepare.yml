@@ -32,6 +32,8 @@
         line: "{{ api_vip }} {{ control_plane_endpoint_host }}"
         regexp: ".*{{ control_plane_endpoint_host }}$"
         state: present
+        # /etc/hosts в контейнере — bind-mount, rename невозможен
+        unsafe_writes: true
 
     - name: Report which bootstrap stages will run
       ansible.builtin.debug:

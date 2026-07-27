@@ -35,7 +35,24 @@ preflight_min_kernel_version: "5.15"
 preflight_check_registry: true
 preflight_check_git: true
 preflight_check_helm_source: true
+preflight_check_package_repo: true
+preflight_check_artifacts: true
 preflight_check_connectivity: true
+
+# MTU задаётся сетевой инфраструктурой и в контейнере не совпадает с
+# производственным значением. Отключается только в molecule.
+preflight_check_mtu: true
+
+# Наличие работающего NTP-демона. Фактическое расхождение часов проверяется
+# всегда, независимо от этого флага.
+preflight_check_timesync_service: true
 
 preflight_connect_timeout: 10
 preflight_ntp_max_offset: "{{ ntp_max_offset_seconds | default(1) }}"
+
+# Узлы, которыми управляет этот проект: control-plane, worker и LB.
+#
+# Не groups['all']: inventory может содержать посторонние хосты — localhost
+# провижнера, узлы соседних систем, — у которых нет node_ip, и проверка
+# падала бы на них с невнятной ошибкой.
+cluster_hosts: "{{ (groups['kubernetes'] | default([])) + (groups['load_balancers'] | default([])) }}"

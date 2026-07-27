@@ -10,12 +10,15 @@
     path: /etc/hosts
     marker: "# {mark} ANSIBLE MANAGED: kubernetes cluster {{ cluster_name }}"
     block: |
-      {% for host in groups['all'] %}
+      {% for host in cluster_hosts %}
       {{ hostvars[host].node_ip }} {{ host }}
       {% endfor %}
     owner: root
     group: root
     mode: "0644"
+    # В контейнере /etc/hosts — bind-mount, и атомарная замена через rename
+    # невозможна (EBUSY). На реальном узле запись остаётся атомарной.
+    unsafe_writes: "{{ os_prepare_hosts_unsafe_writes | bool }}"
   when: os_prepare_manage_hosts | bool
 
 - name: Install base packages
@@ -55,6 +58,17 @@
   when:
     - inventory_hostname in groups['control_plane']
     - etcd_disk_manage | bool
+
+- name: Create the journald drop-in directory
+  # На минимальном образе каталога нет, а template родительские каталоги
+  # не создаёт.
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: os_prepare_manage_journald | bool
 
 - name: Configure journald limits
   ansible.builtin.template:

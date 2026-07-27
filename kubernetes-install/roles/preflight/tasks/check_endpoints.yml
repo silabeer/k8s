@@ -60,7 +60,9 @@
     method: GET
     status_code: 200
     timeout: "{{ preflight_connect_timeout }}"
-  when: inventory_hostname in groups['kubernetes']
+  when:
+    - preflight_check_package_repo | bool
+    - inventory_hostname in groups['kubernetes']
 
 - name: Check artifact storage availability
   ansible.builtin.uri:
@@ -69,6 +71,7 @@
     status_code: 200
     timeout: "{{ preflight_connect_timeout }}"
   when:
+    - preflight_check_artifacts | bool
     - inventory_hostname in groups['kubernetes']
     - containerd_install_method == 'binary'
 

@@ -12,6 +12,9 @@ os_prepare_base_packages:
   - ipset
   - iptables
   - jq
+  # Роль кладёт свой конфиг в /etc/logrotate.d — значит, обязана обеспечить
+  # и сам logrotate: на минимальном образе его нет.
+  - logrotate
   - nfs-common
   - open-iscsi
   - socat
@@ -19,6 +22,10 @@ os_prepare_base_packages:
 
 os_prepare_manage_hostname: true
 os_prepare_manage_hosts: true
+
+# Атомарная запись /etc/hosts. Отключается только в контейнере, где файл
+# смонтирован извне и rename невозможен.
+os_prepare_hosts_unsafe_writes: false
 os_prepare_manage_ntp: true
 os_prepare_manage_swap: true
 os_prepare_manage_logrotate: true
@@ -43,3 +50,10 @@ etcd_disk_mount_opts: "defaults,noatime"
 # вынесена на сетевое оборудование, а неаккуратный ufw ломает Cilium.
 firewall_manage: false
 os_prepare_firewall_extra_ports: []
+
+# Узлы, которыми управляет этот проект: control-plane, worker и LB.
+#
+# Не groups['all']: inventory может содержать посторонние хосты — localhost
+# провижнера, узлы соседних систем, — у которых нет node_ip, и проверка
+# падала бы на них с невнятной ошибкой.
+cluster_hosts: "{{ (groups['kubernetes'] | default([])) + (groups['load_balancers'] | default([])) }}"

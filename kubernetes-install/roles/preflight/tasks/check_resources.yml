@@ -15,17 +15,34 @@
       {{ ansible_memtotal_mb }} MB RAM, требуется минимум {{ preflight_min_ram_mb }} MB.
     quiet: true
 
+# Точка монтирования ищется отдельной задачей: `| first` по пустой
+# последовательности роняет задачу на этапе рендера сообщения, и настоящая
+# причина в выводе не видна. В контейнере `/` в ansible_mounts отсутствует.
+- name: Find the root filesystem mount
+  ansible.builtin.set_fact:
+    preflight_root_mount: >-
+      {{ ansible_mounts | selectattr('mount', 'equalto', '/')
+         | list | first | default({}) }}
+
+- name: Warn when the root filesystem cannot be determined
+  ansible.builtin.debug:
+    msg: >-
+      В ansible_mounts нет записи для «/» — проверка свободного места
+      пропущена. На виртуальной машине такого не бывает; это ожидаемо
+      только в контейнере.
+  when: preflight_root_mount.size_available is not defined
+
 - name: Assert free space on root filesystem
   vars:
     root_free_gb: >-
-      {{ ((ansible_mounts | selectattr('mount', 'equalto', '/') | first).size_available
-          / 1024 / 1024 / 1024) | round(1) }}
+      {{ (preflight_root_mount.size_available / 1024 / 1024 / 1024) | round(1) }}
   ansible.builtin.assert:
     that:
       - root_free_gb | float >= preflight_min_disk_root_gb | float
     fail_msg: >-
       Свободно {{ root_free_gb }} GB на /, требуется {{ preflight_min_disk_root_gb }} GB.
     quiet: true
+  when: preflight_root_mount.size_available is defined
 
 # Отдельный диск etcd обязателен для prod (раздел 5.2). Проверяем, что блочное
 # устройство существует и достаточного размера — до того, как os_prepare

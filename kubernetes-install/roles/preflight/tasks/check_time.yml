@@ -22,6 +22,9 @@
   when: preflight_timesync_service | length == 0
 
 - name: Assert time synchronisation service is running
+  # Проверка службы отделена от проверки фактического расхождения ниже:
+  # в контейнере время принадлежит хосту, свой NTP-демон там не нужен
+  # и запуститься не может, а сами часы при этом верны.
   ansible.builtin.assert:
     that:
       - ansible_facts.services[preflight_timesync_service].state == 'running'
@@ -29,7 +32,9 @@
       {{ preflight_timesync_service }} не запущен
       (состояние: {{ ansible_facts.services[preflight_timesync_service].state }}).
     quiet: true
-  when: preflight_timesync_service | length > 0
+  when:
+    - preflight_check_timesync_service | bool
+    - preflight_timesync_service | length > 0
 
 - name: Get node clock
   ansible.builtin.command:

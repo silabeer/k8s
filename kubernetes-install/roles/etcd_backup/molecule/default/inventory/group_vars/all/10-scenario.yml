@@ -1,0 +1,8 @@
+---
+# Переменные сценария. Вынесены в файл, потому что molecule игнорирует
+# inline host_vars/group_vars при заданном links.
+api_vip: 172.30.6.21
+api_vip_managed: false
+control_plane_endpoint_host: k8s-api.molecule.test
+corporate_networks:
+  - 172.30.6.0/24

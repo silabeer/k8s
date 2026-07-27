@@ -65,32 +65,16 @@ platforms:
 
 provisioner:
   name: ansible
+  # Сценарий лежит внутри роли, и molecule не добавляет каталог roles/
+  # в путь поиска — без этого роль не находится по имени.
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
   inventory:
+    # molecule игнорирует inline host_vars/group_vars, когда задан links,
+    # поэтому переменные сценария лежат файлами в inventory/.
+    # Общий набор подключён симлинком inventory/group_vars/all/00-shared.yml.
     links:
-      group_vars: ../../../../molecule-shared/group_vars
-    host_vars:
-      molecule-join-cp-01:
-        node_ip: 172.30.2.21
-      molecule-join-worker-01:
-        node_ip: 172.30.2.31
-    group_vars:
-      all:
-        # Выделенной пары LB на малом стенде нет: endpoint указывает прямо
-        # на control-plane узел. Для production так делать нельзя (раздел 3.2),
-        # но здесь проверяется не отказоустойчивость VIP.
-        api_vip: "172.30.2.21"
-        api_vip_managed: false
-        control_plane_endpoint_host: "k8s-api.molecule.test"
-        corporate_networks: ["172.30.2.0/24"]
-      control_plane:
-        preflight_min_cpu: 1
-        preflight_min_ram_mb: 900
-        preflight_min_disk_root_gb: 5
-      workers:
-        preflight_min_cpu: 1
-        preflight_min_ram_mb: 900
-        preflight_min_disk_root_gb: 5
-        node_pool: general
-
+      group_vars: inventory/group_vars
+      host_vars: inventory/host_vars
 verifier:
   name: ansible
