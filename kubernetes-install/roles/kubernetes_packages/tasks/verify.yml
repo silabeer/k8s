@@ -62,3 +62,23 @@
     fail_msg: "Пакет {{ item }} не защищён от автообновления (apt-mark hold)."
     quiet: true
   loop: "{{ kubernetes_packages_list }}"
+
+# Проверка CRI-эндпоинта живёт здесь, а не в роли containerd: crictl
+# приезжает с пакетом cri-tools именно на этом этапе, то есть ПОСЛЕ
+# установки containerd (разделы 12 и 13). Роль containerd к этому моменту
+# уже проверила сокет, службу и effective-конфигурацию.
+- name: Query the CRI endpoint
+  ansible.builtin.command:
+    cmd: crictl info -o json
+  register: kubernetes_packages_crictl_info
+  changed_when: false
+
+- name: Assert the CRI endpoint answers with valid JSON
+  ansible.builtin.assert:
+    that:
+      - kubernetes_packages_crictl_info.stdout | from_json is mapping
+      - (kubernetes_packages_crictl_info.stdout | from_json).status is defined
+    fail_msg: >-
+      crictl не смог опросить containerd. Проверьте runtime-endpoint
+      в /etc/crictl.yaml и состояние службы containerd.
+    quiet: true

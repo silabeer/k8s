@@ -10,22 +10,58 @@
     masked: true
   failed_when: false
 
-- name: Render chrony configuration
-  ansible.builtin.template:
-    src: chrony.conf.j2
-    dest: /etc/chrony/chrony.conf
-    owner: root
-    group: root
-    mode: "0644"
-    # -p печатает разобранную конфигурацию и выходит — это и есть проверка
-    # синтаксиса.
-    #
-    # НЕ -Q: тот не проверяет конфигурацию, а выполняет реальный опрос
-    # указанных NTP-серверов и ждёт ответа. При недоступном NTP задача
-    # висит бесконечно, подвешивая весь os_prepare ещё до установки
-    # Kubernetes.
-    validate: "chronyd -f %s -p"
-  notify: Restart chrony
+# Параметр validate модуля template здесь неприменим: он отдаёт на проверку
+# временный файл в домашнем каталоге пользователя подключения, а AppArmor-
+# профиль usr.sbin.chronyd на Ubuntu разрешает chronyd читать только
+# /etc/chrony/**. Отказ приходит даже под root:
+#   apparmor="DENIED" operation="open" profile="/usr/sbin/chronyd" fsuid=0
+#
+# Поэтому проверяем уже установленный файл по разрешённому пути, а при
+# отказе откатываем предыдущую версию.
+- name: Render and validate chrony configuration
+  block:
+    - name: Render chrony configuration
+      ansible.builtin.template:
+        src: chrony.conf.j2
+        dest: /etc/chrony/chrony.conf
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      register: os_prepare_chrony_conf
+      notify: Restart chrony
+
+    - name: Validate the installed chrony configuration
+      # -p печатает разобранную конфигурацию и выходит — это и есть проверка
+      # синтаксиса.
+      #
+      # НЕ -Q: тот не проверяет конфигурацию, а выполняет реальный опрос
+      # указанных NTP-серверов и ждёт ответа. При недоступном NTP задача
+      # висит бесконечно, подвешивая весь os_prepare ещё до установки
+      # Kubernetes.
+      ansible.builtin.command:
+        cmd: "chronyd -u root -f /etc/chrony/chrony.conf -p"
+      changed_when: false
+
+  rescue:
+    - name: Restore the previous chrony configuration
+      ansible.builtin.copy:
+        src: "{{ os_prepare_chrony_conf.backup_file }}"
+        dest: /etc/chrony/chrony.conf
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: os_prepare_chrony_conf.backup_file is defined
+
+    - name: Fail with the validation error
+      ansible.builtin.fail:
+        msg: >-
+          Конфигурация chrony не прошла проверку `chronyd -p`.
+          {{ 'Предыдущая версия восстановлена из '
+             ~ os_prepare_chrony_conf.backup_file
+             if os_prepare_chrony_conf.backup_file is defined
+             else 'Резервной копии не было — файл создан впервые.' }}
 
 - name: Enable and start chrony
   ansible.builtin.systemd:

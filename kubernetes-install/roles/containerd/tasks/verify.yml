@@ -12,18 +12,40 @@
   changed_when: false
   failed_when: containerd_active.stdout | trim != 'active'
 
-- name: Query CRI info
+# crictl приходит с пакетом cri-tools на этапе 30, то есть ПОЗЖЕ этой роли
+# (разделы 12 и 13). Поэтому проверки через него выполняются, только если
+# он уже есть — при повторном прогоне или при отдельном запуске роли.
+# Полная проверка CRI-эндпоинта живёт в роли kubernetes_packages.
+- name: Check whether crictl is already installed
   ansible.builtin.command:
-    cmd: crictl info -o json
-  register: containerd_crictl_info
+    cmd: command -v crictl
+  register: containerd_crictl_present
   changed_when: false
+  failed_when: false
 
-- name: Assert CRI info is valid JSON
-  ansible.builtin.assert:
-    that:
-      - containerd_crictl_info.stdout | from_json is mapping
-    fail_msg: "crictl info вернул невалидный JSON."
-    quiet: true
+- name: Verify the CRI endpoint through crictl
+  when: containerd_crictl_present.rc == 0
+  block:
+    - name: Query CRI info
+      ansible.builtin.command:
+        cmd: crictl info -o json
+      register: containerd_crictl_info
+      changed_when: false
+
+    - name: Assert CRI info is valid JSON
+      ansible.builtin.assert:
+        that:
+          - containerd_crictl_info.stdout | from_json is mapping
+        fail_msg: "crictl info вернул невалидный JSON."
+        quiet: true
+
+- name: Report deferred CRI check
+  ansible.builtin.debug:
+    msg: >-
+      crictl ещё не установлен — проверка CRI-эндпоинта отложена до этапа 30
+      (роль kubernetes_packages). Сам containerd при этом уже проверен:
+      сокет существует, служба активна, effective-конфигурация разобрана.
+  when: containerd_crictl_present.rc != 0
 
 - name: Dump effective containerd configuration
   ansible.builtin.command:
@@ -68,4 +90,6 @@
   retries: 3
   delay: 5
   until: containerd_pull is succeeded
-  when: containerd_verify_pull | bool
+  when:
+    - containerd_verify_pull | bool
+    - containerd_crictl_present.rc == 0

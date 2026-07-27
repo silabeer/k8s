@@ -130,7 +130,7 @@ etcd:
   local:
     dataDir: /var/lib/etcd
     extraArgs:
-      {# etcd принимает версию TLS в другом формате, чем apiserver #}
+      # etcd принимает версию TLS в другом формате, чем apiserver
       - name: tls-min-version
         value: {{ etcd_tls_min_version }}
       - name: cipher-suites

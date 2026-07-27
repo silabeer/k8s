@@ -73,7 +73,7 @@
   when:
     - preflight_check_artifacts | bool
     - inventory_hostname in groups['kubernetes']
-    - containerd_install_method == 'binary'
+    - containerd_install_method | default('binary') == 'binary'
 
 - name: Check secret backend availability
   ansible.builtin.uri:

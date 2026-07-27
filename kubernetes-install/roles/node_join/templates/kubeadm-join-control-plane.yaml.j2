@@ -16,11 +16,9 @@ nodeRegistration:
   name: {{ inventory_hostname }}
   criSocket: unix://{{ containerd_socket }}
   imagePullPolicy: IfNotPresent
-  {#
-    Taint control-plane узла kubeadm выставляет сам; переопределять его
-    здесь не нужно — пустой список снял бы защиту от размещения
-    пользовательских workload.
-  #}
+  # Taint control-plane узла kubeadm выставляет сам; переопределять его
+  # здесь не нужно — пустой список снял бы защиту от размещения
+  # пользовательских workload.
   kubeletExtraArgs:
     - name: node-ip
       value: {{ node_ip }}

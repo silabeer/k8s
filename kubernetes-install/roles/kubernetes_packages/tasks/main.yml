@@ -67,6 +67,14 @@
     selection: hold
   loop: "{{ kubernetes_packages_list }}"
 
+- name: Install the Kubernetes python client on control-plane nodes
+  ansible.builtin.apt:
+    name: "{{ kubernetes_packages_python_client }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: kubernetes_packages_install_python_client | bool
+
 - name: Enable kubelet
   # kubelet намеренно не запускается: до kubeadm init/join у него нет
   # конфигурации, и он будет перезапускаться в цикле. kubeadm стартует его сам.

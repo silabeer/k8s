@@ -12,11 +12,9 @@ nodeRegistration:
   criSocket: unix://{{ containerd_socket }}
   imagePullPolicy: IfNotPresent
 {% if node_taints | default([]) | length > 0 %}
-  {#
-    Taints выставляются ПРИ РЕГИСТРАЦИИ, а не через GitOps (S7).
-    Иначе существует окно, в котором узел уже Ready, но ещё не затейнчен,
-    и на него успевает приземлиться посторонний workload.
-  #}
+  # Taints выставляются ПРИ РЕГИСТРАЦИИ, а не через GitOps (S7).
+  # Иначе существует окно, в котором узел уже Ready, но ещё не затейнчен,
+  # и на него успевает приземлиться посторонний workload.
   taints:
 {% for taint in node_taints %}
     - key: "{{ taint.key }}"
@@ -29,12 +27,10 @@ nodeRegistration:
   kubeletExtraArgs:
     - name: node-ip
       value: {{ node_ip }}
-    {#
-      ВНИМАНИЕ: сюда попадают только БЕЗДОМЕННЫЕ labels.
-      NodeRestriction запрещает kubelet выставлять labels в домене
-      kubernetes.io, поэтому node-role.kubernetes.io/worker здесь быть
-      не может — регистрация узла будет отклонена (B2).
-      Роль назначается после join, см. tasks/assign_labels.yml.
-    #}
+    # ВНИМАНИЕ: сюда попадают только БЕЗДОМЕННЫЕ labels.
+    # NodeRestriction запрещает kubelet выставлять labels в домене
+    # kubernetes.io, поэтому node-role.kubernetes.io/worker здесь быть
+    # не может — регистрация узла будет отклонена (B2).
+    # Роль назначается после join, см. tasks/assign_labels.yml.
     - name: node-labels
       value: {% for key, value in node_join_kubelet_labels.items() %}{{ key }}={{ value }}{% if not loop.last %},{% endif %}{% endfor %}

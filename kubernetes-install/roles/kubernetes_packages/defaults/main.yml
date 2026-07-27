@@ -14,3 +14,9 @@ kubernetes_packages_crictl_apt_version: "{{ crictl_version }}-*"
 # helm нужен только узлу, выполняющему bootstrap Cilium и Argo CD
 kubernetes_packages_install_helm: "{{ inventory_hostname == groups['control_plane'] | first }}"
 kubernetes_packages_helm_bin_dir: /usr/local/bin
+
+# Модули kubernetes.core выполняются НА control-plane узле (роли обращаются
+# к нему через delegate_to), поэтому клиентская библиотека нужна именно там,
+# а не на управляющей машине. Без неё падают все проверки через k8s_info.
+kubernetes_packages_python_client: python3-kubernetes
+kubernetes_packages_install_python_client: "{{ inventory_hostname in groups['control_plane'] }}"

@@ -12,3 +12,11 @@ control_plane_init_readyz_delay: 5
 # Предзагрузка образов до init: при недоступности зеркала ошибка приходит
 # до необратимой операции, а не в её середине.
 control_plane_init_pull_images: true
+
+# Пути к конфигурациям безопасности. Их создаёт роль kubeadm_config, а эта
+# роль проверяет, что они попали в манифест apiserver. Defaults чужой роли
+# здесь не видны, поэтому значения продублированы; из inventory они
+# переопределяются согласованно для обеих ролей.
+kubeadm_encryption_config_path: /etc/kubernetes/encryption-config.yaml
+kubeadm_audit_policy_path: /etc/kubernetes/audit-policy.yaml
+kubeadm_admission_config_path: /etc/kubernetes/admission-config.yaml
