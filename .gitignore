@@ -1,0 +1,3 @@
+# Заготовка GitOps-репозитория живёт в собственном репозитории
+# (https://github.com/silabeer/argocd-test) и здесь не отслеживается.
+gitops-test/
