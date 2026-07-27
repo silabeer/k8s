@@ -24,6 +24,7 @@
 * `evictionHard` дополнен `nodefs.inodesFree` (раздел 14.2).
 * Переменная `environment` переименована в `cluster_environment` — исходное имя зарезервировано Ansible (раздел 6).
 * Шаблоны перенесены в каталоги ролей (раздел 7), пример `molecule.yml` приведён к схеме Molecule 6+ (раздел 25.3).
+* Тестирование целиком переведено на driver `docker`: кластерные сценарии поднимают kubeadm внутри контейнеров, зависимость от гипервизора и VM-стенда убрана. Введена переменная `node_ip`, отделяющая адрес узла в кластере от адреса подключения (раздел 25.3).
 
 ## 1. Назначение документа
 
@@ -1632,33 +1633,71 @@ verifier:
 
 В контейнере невозможны: swapoff, загрузка kernel modules, часть sysctl. Такие задачи в ролях помечаются условием (`when: not molecule_test | default(false)`) либо проверяется только результат рендера конфигурации — фактическое применение покрывается уровнем 2.
 
-### Уровень 2. VM-тесты (delegated driver)
+### Уровень 2. Кластерные тесты (тот же docker driver)
 
-Для ролей, которым нужны реальное ядро, systemd, сеть и несколько узлов:
+Для ролей, которым нужен работающий кластер:
 
 * `control_plane_init`;
 * `node_join`;
 * `cilium_bootstrap`;
 * `argocd_bootstrap`;
 * `cluster_validation`;
+* `etcd_backup`;
 * интеграционный сценарий полного `site.yml`.
 
-Driver `delegated`: create/destroy-плейбуки создают ВМ через API виртуализации (zVirt/oVirt, Vagrant+libvirt для локальной разработки) из того же golden image, что и production-узлы. Минимальный стенд интеграционного сценария: 1 LB, 1 control-plane, 1 worker; для теста HA-логики join — 3 control-plane.
+Driver тот же — `docker`. kubeadm поднимается **внутри контейнеров**, как это делает `kind`. Виртуальные машины не используются: единый драйвер снимает зависимость от гипервизора, ускоряет прогон и позволяет запускать кластерные сценарии на том же раннере, что и контейнерные.
+
+Требования к контейнеру-узлу:
+
+| Параметр | Зачем |
+| -------- | ----- |
+| `privileged: true` | монтирование, запись в cgroup, iptables |
+| `cgroupns_mode: host` + `/sys/fs/cgroup:rw` | cgroup v2 для kubelet и containerd |
+| `/lib/modules:ro` | kubelet и Cilium читают сведения о модулях |
+| `devices: /dev/kmsg` | без него kubelet не стартует |
+| анонимный том на `/var/lib/containerd` | overlayfs поверх overlayfs не работает |
 
 ```yaml
 driver:
-  name: default
+  name: docker
 platforms:
-  - name: molecule-cp-01
+  - name: molecule-cpinit-cp-01
+    image: harbor.company.local/test/ubuntu-systemd:24.04
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /lib/modules:/lib/modules:ro
+      - /var/lib/containerd
+    tmpfs: [/run, /tmp]
+    devices:
+      - /dev/kmsg:/dev/kmsg:rwm
+    docker_networks:
+      - name: molecule-cpinit
+        ipam_config:
+          - subnet: 172.30.1.0/24
+    networks:
+      - name: molecule-cpinit
+        ipv4_address: 172.30.1.21
     groups: [control_plane, kubernetes]
-  - name: molecule-worker-01
-    groups: [workers, kubernetes]
-provisioner:
-  name: ansible
-  playbooks:
-    create: ../resources/create-vms.yml
-    destroy: ../resources/destroy-vms.yml
 ```
+
+Сеть и имена контейнеров **уникальны для каждого сценария**: `molecule destroy` удаляет сеть, и общая сеть у параллельных сценариев в CI приводила бы к гонке.
+
+**Адрес узла отделён от адреса подключения.** При `connection: docker` переменная `ansible_host` — это имя контейнера, поэтому адрес узла в кластере вынесен в отдельную переменную `node_ip`. Она попадает в `--node-ip`, `advertiseAddress`, `certSANs`, backend HAProxy и `/etc/hosts`. В production-inventory `node_ip: "{{ ansible_host }}"`. Разделение полезно и вне тестов: адреса сети управления и кластерной сети совпадают не всегда.
+
+### Что контейнерный стенд не проверяет
+
+Три вещи в контейнере проверить нельзя. Они выключены явно, в общем файле переменных, а не спрятаны по сценариям:
+
+| Что | Почему | Чем закрыто |
+| --- | ------ | ----------- |
+| фактические sysctl `protectKernelDefaults` | `kernel.*` не изолируются namespace, внутри контейнера видны значения хоста; Docker не даёт задать их через `sysctls` | сценарий роли `kernel` сверяет отрендеренный `sysctl.d` с набором, который требует kubelet |
+| отключение swap | `/proc/swaps` показывает swap хоста, а `swapoff` из privileged-контейнера отключил бы его на хосте | ручная проверка при вводе узла; в контейнере `failSwapOn: false` |
+| отдельный диск под etcd | блочное устройство контейнеру не подключить | `/var/lib/etcd` вынесен в анонимный docker-том, что даёт настоящую ФС вместо overlay |
+
+Для первого пункта предусмотрен строгий режим: если хост CI подготовлен (`make ci-host-prereq` выставляет шесть нужных sysctl) и задана переменная `MOLECULE_HOST_SYSCTLS_SET=true`, сценарии работают с `protectKernelDefaults: true` и проверяют настоящее поведение kubelet.
 
 ## 25.4. Что проверяет verify
 
@@ -1723,10 +1762,11 @@ molecule-vm:
 
 Правила:
 
-* контейнерные тесты — на каждый MR, только для изменённых ролей;
-* VM-тесты — на merge в main и по ночному расписанию (полный `site.yml` на стенде с последующим прогоном роли `cluster_validation`);
-* MR не мержится при падении lint или контейнерных тестов; падение ночного VM-прогона — блокер релиза playbook;
-* стенд VM-тестов уничтожается после прогона (`molecule destroy` в `after_script`), чтобы не накапливать дрейф;
+* тесты ролей, меняющих конфигурацию ОС, — на каждый MR, только для изменённых ролей;
+* кластерные тесты — на merge в main и по ночному расписанию (полный `site.yml` с последующим прогоном роли `cluster_validation`);
+* MR не мержится при падении lint или тестов уровня 1; падение ночного кластерного прогона — блокер релиза playbook;
+* стенд уничтожается после прогона (`molecule destroy` в `after_script`), чтобы не накапливать дрейф и не оставлять за собой docker-сети;
+* кластерные сценарии требуют раннера с доступом к Docker-сокету хоста и правом запускать privileged-контейнеры; DinD не подходит;
 * секреты для тестов (тестовый OpenBao path, deploy key тестового GitOps-репо) — только через CI variables, отдельные от production.
 
 ## 25.6. Makefile
@@ -1743,6 +1783,14 @@ test-all-roles:
 
 test-integration:
 	cd molecule-integration && molecule test -s site-full
+
+# Строгий режим kubelet: выставляет на ЭТОМ хосте шесть sysctl, которые
+# проверяет protectKernelDefaults. Выполнять только на выделенном раннере.
+ci-host-prereq:
+	sudo sysctl -w vm.overcommit_memory=1 vm.panic_on_oom=0 \
+	             kernel.panic=10 kernel.panic_on_oops=1 \
+	             kernel.keys.root_maxkeys=1000000 \
+	             kernel.keys.root_maxbytes=25000000
 ```
 
 ---

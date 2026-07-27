@@ -10,7 +10,7 @@ discovery:
 controlPlane:
   certificateKey: {{ node_join_certificate_key }}
   localAPIEndpoint:
-    advertiseAddress: {{ ansible_host }}
+    advertiseAddress: {{ node_ip }}
     bindPort: {{ control_plane_endpoint_port }}
 nodeRegistration:
   name: {{ inventory_hostname }}
@@ -23,4 +23,4 @@ nodeRegistration:
   #}
   kubeletExtraArgs:
     - name: node-ip
-      value: {{ ansible_host }}
+      value: {{ node_ip }}

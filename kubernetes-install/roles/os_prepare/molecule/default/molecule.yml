@@ -24,14 +24,9 @@ provisioner:
       group_vars: ../../../../molecule-shared/group_vars
     host_vars:
       molecule-osprep-cp-01:
-        ansible_host: 10.99.0.21
-    group_vars:
-      all:
-        # В контейнере hostname задаётся движком, а swap отсутствует —
-        # соответствующие блоки роли проверяются на уровне 2.
-        os_prepare_manage_hostname: false
-        os_prepare_manage_swap: false
-        etcd_disk_manage: false
+        node_ip: 10.99.0.21
+    # Отключение hostname, swap и диска etcd задано в общем файле
+    # molecule-shared/group_vars/all.yml вместе с объяснением причин.
 
 verifier:
   name: ansible

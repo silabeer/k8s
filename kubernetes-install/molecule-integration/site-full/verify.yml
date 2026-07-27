@@ -1,6 +1,13 @@
 ---
-# Проверки уровня 2, недоступные контейнерным сценариям: реальное ядро,
-# systemd, VRRP, работающий кластер.
+# Проверки, недоступные сценариям отдельных ролей: многоузловой кластер,
+# VRRP между парой LB, идемпотентность полного прогона.
+#
+# Стенд контейнерный, поэтому три вещи здесь не проверяются и закрыты иначе
+# (см. molecule-shared/group_vars/all.yml и README):
+#   * фактические sysctl protectKernelDefaults — kernel.* не изолируются
+#     namespace, внутри контейнера видны значения хоста;
+#   * отключение swap — /proc/swaps показывает swap хоста;
+#   * отдельный диск под etcd — блочное устройство контейнеру не подключить.
 
 - name: Verify node-level state
   hosts: kubernetes
@@ -8,43 +15,50 @@
   gather_facts: true
 
   tasks:
-    # Регрессионный тест на B1: в контейнере sysctl не применяются, поэтому
-    # фактические значения проверяются только здесь. Без полного набора
-    # kubelet не стартует.
-    - name: Read effective protectKernelDefaults sysctls
-      ansible.builtin.slurp:
-        src: "/proc/sys/{{ item.key | replace('.', '/') }}"
-      loop: "{{ expected | dict2items }}"
-      loop_control:
-        label: "{{ item.key }}"
-      vars:
-        expected:
-          vm.overcommit_memory: 1
-          vm.panic_on_oom: 0
-          kernel.panic: 10
-          kernel.panic_on_oops: 1
-          kernel.keys.root_maxkeys: 1000000
-          kernel.keys.root_maxbytes: 25000000
-      register: effective_sysctls
+    # Выполняется, только если хост CI подготовлен (`make ci-host-prereq`)
+    # и задан MOLECULE_HOST_SYSCTLS_SET: тогда kubelet действительно работает
+    # с protectKernelDefaults: true и проверка имеет смысл.
+    - name: Verify protectKernelDefaults sysctls on a prepared host
+      when: kubelet_protect_kernel_defaults | bool
+      block:
+        - name: Read effective sysctls
+          ansible.builtin.slurp:
+            src: "/proc/sys/{{ item.key | replace('.', '/') }}"
+          loop: "{{ expected | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+          vars:
+            expected:
+              vm.overcommit_memory: 1
+              vm.panic_on_oom: 0
+              kernel.panic: 10
+              kernel.panic_on_oops: 1
+              kernel.keys.root_maxkeys: 1000000
+              kernel.keys.root_maxbytes: 25000000
+          register: effective_sysctls
 
-    - name: Assert every protectKernelDefaults value is effective
-      ansible.builtin.assert:
-        that:
-          - (item.content | b64decode | trim | int) == (item.item.value | int)
-        fail_msg: >-
-          sysctl {{ item.item.key }} = {{ item.content | b64decode | trim }},
-          kubelet ожидает {{ item.item.value }} (B1).
-        quiet: true
-      loop: "{{ effective_sysctls.results }}"
-      loop_control:
-        label: "{{ item.item.key }}"
+        - name: Assert every protectKernelDefaults value is effective
+          ansible.builtin.assert:
+            that:
+              - (item.content | b64decode | trim | int) == (item.item.value | int)
+            fail_msg: >-
+              sysctl {{ item.item.key }} = {{ item.content | b64decode | trim }},
+              kubelet ожидает {{ item.item.value }} (B1).
+            quiet: true
+          loop: "{{ effective_sysctls.results }}"
+          loop_control:
+            label: "{{ item.item.key }}"
 
-    - name: Assert swap is disabled
-      ansible.builtin.command:
-        cmd: swapon --noheadings --show=NAME
-      register: swap_check
-      changed_when: false
-      failed_when: swap_check.stdout | trim | length > 0
+    - name: Report skipped kernel checks
+      ansible.builtin.debug:
+        msg: >-
+          Проверка фактических sysctl пропущена: kernel.* внутри контейнера
+          принадлежат хосту. Корректность набора из шести значений проверяет
+          сценарий роли kernel. Чтобы проверить и поведение kubelet,
+          подготовьте хост (`make ci-host-prereq`) и задайте
+          MOLECULE_HOST_SYSCTLS_SET=true.
+      when: not kubelet_protect_kernel_defaults | bool
+      run_once: true
 
     - name: Assert kubelet is running  # noqa: command-instead-of-module
       ansible.builtin.command:
@@ -53,26 +67,14 @@
       changed_when: false
       failed_when: kubelet_state.stdout | trim != 'active'
 
-- name: Verify the dedicated etcd disk
-  hosts: control_plane
-  become: true
-  gather_facts: false
-
-  tasks:
-    # Если диск не смонтирован ДО kubeadm init, данные etcd лягут на корень,
-    # а последующее монтирование их спрячет (S12).
-    - name: Assert /var/lib/etcd is a separate mount
+    - name: Assert containerd state lives on a real filesystem
+      # Анонимный docker-том на /var/lib/containerd: overlayfs поверх
+      # overlayfs не работает, снапшоттер ломается при первом же пулле.
       ansible.builtin.command:
-        cmd: findmnt --noheadings --output SOURCE --target /var/lib/etcd
-      register: etcd_mount
+        cmd: findmnt --noheadings --output FSTYPE --target /var/lib/containerd
+      register: containerd_fs
       changed_when: false
-      failed_when: etcd_disk_device not in etcd_mount.stdout
-
-    - name: Assert etcd data lives on that mount
-      ansible.builtin.stat:
-        path: /var/lib/etcd/member
-      register: etcd_member
-      failed_when: not etcd_member.stat.exists
+      failed_when: containerd_fs.stdout | trim == 'overlay'
 
 - name: Verify load balancer failover
   hosts: load_balancers

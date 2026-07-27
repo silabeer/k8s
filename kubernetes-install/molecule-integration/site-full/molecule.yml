@@ -1,8 +1,12 @@
 ---
-# Интеграционный прогон полного site.yml на VM-стенде (уровень 2).
+# Интеграционный прогон полного site.yml на docker-стенде.
 #
-# Запускается на merge в main и по ночному расписанию. Стенд уничтожается
-# после прогона, чтобы не накапливать дрейф (раздел 25.5).
+# Состав как в разделе 3.1 документа: 2 LB, 3 control-plane, 1 worker.
+# kubeadm поднимается внутри контейнеров — так же работает kind.
+#
+# Требования к контейнеру-узлу и причины см. в сценариях ролей уровня 2;
+# здесь дополнительно поднимается VIP на паре LB, поэтому им нужен NET_ADMIN
+# (входит в privileged) для назначения адреса и VRRP.
 #
 #   cd molecule-integration && molecule test -s site-full
 dependency:
@@ -11,74 +15,161 @@ dependency:
     requirements-file: ../../requirements.yml
 
 driver:
-  name: default
+  name: docker
 
 platforms:
   - name: molecule-lb-01
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs: [/run, /tmp]
+    docker_networks:
+      - name: molecule-full
+        ipam_config:
+          - subnet: 172.30.10.0/24
+    networks:
+      - name: molecule-full
+        ipv4_address: 172.30.10.10
     groups: [load_balancers]
+
   - name: molecule-lb-02
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs: [/run, /tmp]
+    networks:
+      - name: molecule-full
+        ipv4_address: 172.30.10.11
     groups: [load_balancers]
+
   - name: molecule-cp-01
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /lib/modules:/lib/modules:ro
+      - /var/lib/containerd
+      - /var/lib/kubelet
+      - /var/lib/etcd
+    tmpfs: [/run, /tmp]
+    devices:
+      - /dev/kmsg:/dev/kmsg:rwm
+    networks:
+      - name: molecule-full
+        ipv4_address: 172.30.10.21
     groups: [control_plane, kubernetes]
+
   - name: molecule-cp-02
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /lib/modules:/lib/modules:ro
+      - /var/lib/containerd
+      - /var/lib/kubelet
+      - /var/lib/etcd
+    tmpfs: [/run, /tmp]
+    devices:
+      - /dev/kmsg:/dev/kmsg:rwm
+    networks:
+      - name: molecule-full
+        ipv4_address: 172.30.10.22
     groups: [control_plane, kubernetes]
+
   - name: molecule-cp-03
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /lib/modules:/lib/modules:ro
+      - /var/lib/containerd
+      - /var/lib/kubelet
+      - /var/lib/etcd
+    tmpfs: [/run, /tmp]
+    devices:
+      - /dev/kmsg:/dev/kmsg:rwm
+    networks:
+      - name: molecule-full
+        ipv4_address: 172.30.10.23
     groups: [control_plane, kubernetes]
+
   - name: molecule-worker-01
+    image: "${MOLECULE_IMAGE:-harbor.company.local/test/ubuntu-systemd:24.04}"
+    command: /lib/systemd/systemd
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - /lib/modules:/lib/modules:ro
+      - /var/lib/containerd
+      - /var/lib/kubelet
+    tmpfs: [/run, /tmp]
+    devices:
+      - /dev/kmsg:/dev/kmsg:rwm
+    networks:
+      - name: molecule-full
+        ipv4_address: 172.30.10.31
     groups: [workers, kubernetes]
 
 provisioner:
   name: ansible
-  playbooks:
-    create: ../../molecule-shared/resources/create-vms.yml
-    destroy: ../../molecule-shared/resources/destroy-vms.yml
   inventory:
     links:
       group_vars: ../../molecule-shared/group_vars
     host_vars:
       molecule-lb-01:
-        ansible_host: 192.168.121.10
+        node_ip: 172.30.10.10
         keepalived_priority: 150
         keepalived_state: MASTER
       molecule-lb-02:
-        ansible_host: 192.168.121.11
+        node_ip: 172.30.10.11
         keepalived_priority: 100
         keepalived_state: BACKUP
       molecule-cp-01:
-        ansible_host: 192.168.121.21
+        node_ip: 172.30.10.21
       molecule-cp-02:
-        ansible_host: 192.168.121.22
+        node_ip: 172.30.10.22
       molecule-cp-03:
-        ansible_host: 192.168.121.23
+        node_ip: 172.30.10.23
       molecule-worker-01:
-        ansible_host: 192.168.121.31
+        node_ip: 172.30.10.31
     group_vars:
       all:
-        # На стенде VIP обслуживается собственной парой LB
-        api_vip: "192.168.121.20"
+        # VIP обслуживается собственной парой LB — единственный сценарий,
+        # где проверяется failover keepalived.
+        api_vip: "172.30.10.20"
         api_vip_managed: true
-        api_vip_interface: eth1
+        api_vip_interface: eth0
+        api_vip_cidr_prefix: 24
         control_plane_endpoint_host: "k8s-api.molecule.test"
-        corporate_networks: ["192.168.121.0/24"]
+        corporate_networks: ["172.30.10.0/24"]
         haproxy_package_version: "*"
         keepalived_package_version: "*"
-        node_mtu: 1500
       control_plane:
-        etcd_disk_manage: true
-        etcd_disk_device: /dev/vdb
-        preflight_min_cpu: 2
-        preflight_min_ram_mb: 3500
-        preflight_min_disk_root_gb: 10
-        preflight_min_disk_etcd_gb: 15
-      workers:
-        preflight_min_cpu: 2
-        preflight_min_ram_mb: 3500
-        preflight_min_disk_root_gb: 10
-        node_pool: general
-      load_balancers:
         preflight_min_cpu: 1
         preflight_min_ram_mb: 900
         preflight_min_disk_root_gb: 5
+      workers:
+        preflight_min_cpu: 1
+        preflight_min_ram_mb: 900
+        preflight_min_disk_root_gb: 5
+        node_pool: general
+      load_balancers:
+        preflight_min_cpu: 1
+        preflight_min_ram_mb: 500
+        preflight_min_disk_root_gb: 2
 
 verifier:
   name: ansible

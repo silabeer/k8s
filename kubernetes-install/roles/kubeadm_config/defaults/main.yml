@@ -22,4 +22,22 @@ etcd_tls_min_version: TLS1.2
 kubelet_container_log_max_size: "50Mi"
 kubelet_container_log_max_files: 5
 
+# =============================================================================
+# Два параметра ниже вынесены в переменные ТОЛЬКО ради контейнерных тестов.
+# В production оба обязаны оставаться в значениях по умолчанию.
+#
+# protectKernelDefaults: kubelet читает /proc/sys/kernel/*, а эти параметры
+# не изолируются сетевым или PID namespace — внутри контейнера видны значения
+# ХОСТА. Docker не позволяет задать их через `sysctls` (в whitelist только
+# net.*, fs.mqueue.* и часть kernel.{sem,shm,msg}). Поэтому контейнерный
+# сценарий может включить protectKernelDefaults, лишь если нужные значения
+# выставлены на самом хосте CI — см. `make ci-host-prereq`.
+kubelet_protect_kernel_defaults: true
+
+# failSwapOn: /proc/swaps внутри контейнера показывает swap хоста, а `swapoff`
+# из privileged-контейнера отключил бы swap на хосте. Поэтому в контейнерных
+# сценариях swap не трогается, а kubelet его игнорирует.
+kubelet_fail_swap_on: true
+# =============================================================================
+
 kubeadm_config_validate: true

@@ -29,7 +29,7 @@ provisioner:
       group_vars: ../../../../molecule-shared/group_vars
     host_vars:
       molecule-containerd-01:
-        ansible_host: 10.99.0.21
+        node_ip: 10.99.0.21
     group_vars:
       all:
         # Pull тестового образа требует доступа к Harbor и рабочих зеркал.

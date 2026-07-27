@@ -83,30 +83,61 @@ make test-all-roles
 make test-integration           # VM-прогон полного site.yml
 ```
 
-Два уровня, как в разделе 25 документа:
+**Всё работает на driver `docker`**, виртуальные машины не используются.
+Кластерные сценарии поднимают kubeadm внутри контейнеров — так же работает
+`kind`.
 
-* **Уровень 1 (docker)** — `preflight`, `kernel`, `os_prepare`, `containerd`,
-  `kubernetes_packages`, `kubeadm_config`, `haproxy_keepalived`. Проверяется
-  рендер конфигурации и идемпотентность. Запускаются на каждый MR.
-* **Уровень 2 (delegated)** — роли, которым нужны реальное ядро, systemd и
-  работающий кластер, плюс интеграционный `site-full`. Стенд поднимается
-  через Vagrant + libvirt локально; для CI провайдер zVirt оставлен точкой
-  расширения в `molecule-shared/resources/provision-zvirt.yml`.
+* **Роли, меняющие конфигурацию ОС** — `preflight`, `kernel`, `os_prepare`,
+  `containerd`, `kubernetes_packages`, `kubeadm_config`, `haproxy_keepalived`.
+  Обычные контейнеры, быстрые, на каждый MR.
+* **Роли, которым нужен кластер** — `control_plane_init`, `node_join`,
+  `cilium_bootstrap`, `argocd_bootstrap`, `cluster_validation`, `etcd_backup`
+  и интеграционный `site-full`. Контейнеры-узлы запускаются `privileged`,
+  с `cgroupns_mode: host`, проброшенным `/dev/kmsg` и анонимным томом на
+  `/var/lib/containerd`.
 
-Линтеры запускать **в версиях из `requirements-test.txt`**. На ansible-lint 6.x
-проект даёт ложные ошибки: схема той версии не знает Ubuntu noble, а без
-`netaddr` не работает фильтр `ipaddr` в роли `preflight`.
+Раннер для кластерных сценариев должен иметь доступ к Docker-сокету хоста и
+право запускать privileged-контейнеры. DinD не подходит: нужен `/dev/kmsg`
+и cgroup хоста.
 
-Сценарии, которым нужен GitOps-репозиторий, требуют переменных окружения:
+Сеть и имена контейнеров уникальны для каждого сценария — `molecule destroy`
+удаляет сеть, и общая сеть у параллельных сценариев даёт гонку.
+
+### Чего контейнерный стенд не проверяет
+
+Три вещи проверить в контейнере нельзя. Они выключены явно в
+`molecule-shared/group_vars/all.yml`, а не спрятаны по сценариям:
+
+| Что | Почему | Чем закрыто |
+| --- | ------ | ----------- |
+| фактические sysctl `protectKernelDefaults` | `kernel.*` не изолируются namespace: внутри контейнера видны значения хоста, а Docker не даёт задать их через `sysctls` | сценарий роли `kernel` сверяет отрендеренный `sysctl.d` с набором, который требует kubelet |
+| отключение swap | `/proc/swaps` показывает swap хоста, а `swapoff` из privileged-контейнера отключил бы его на хосте | в контейнере `failSwapOn: false`; на реальном узле проверяется при вводе |
+| отдельный диск под etcd | блочное устройство контейнеру не подключить | `/var/lib/etcd` вынесен в анонимный docker-том — настоящая ФС вместо overlay |
+
+Первое можно проверить по-настоящему: подготовьте хост и включите строгий режим.
 
 ```bash
-export MOLECULE_GITOPS_REPO=ssh://git@gitlab.company.local/platform/kubernetes-gitops-test.git
+make ci-host-prereq                      # шесть sysctl на ЭТОМ хосте
+export MOLECULE_HOST_SYSCTLS_SET=true    # kubelet запустится с protectKernelDefaults: true
+```
+
+### Переменные окружения
+
+```bash
+export MOLECULE_IMAGE=harbor.company.local/test/ubuntu-systemd:24.04
 export MOLECULE_REGISTRY_HOST=harbor.company.local
-export MOLECULE_PROVIDER=vagrant
+export MOLECULE_MIRROR_HOST=mirror.company.local
+export MOLECULE_ARTIFACTS_HOST=artifacts.company.local
+# только для сценариев cilium_bootstrap и argocd_bootstrap
+export MOLECULE_GITOPS_REPO=ssh://git@gitlab.company.local/platform/kubernetes-gitops-test.git
 ```
 
 Тестовые секреты создаются из `secrets.yml.example` рядом со сценарием и в
 репозиторий не коммитятся.
+
+Линтеры запускать **в версиях из `requirements-test.txt`**. На ansible-lint 6.x
+проект даёт ложные ошибки: схема той версии не знает Ubuntu noble, а без
+`netaddr` не работает фильтр `ipaddr` в роли `preflight`.
 
 ## Структура
 
@@ -114,7 +145,7 @@ export MOLECULE_PROVIDER=vagrant
 inventories/          prod-01, stage-01
 playbooks/            00..80, site.yml, upgrade/, maintenance/
 roles/                13 ролей, каждая с molecule/default/
-molecule-shared/      общие переменные и ресурсы для VM-стенда
+molecule-shared/      общие переменные и prepare для кластерных сценариев
 molecule-integration/ прогон полного site.yml
 ```
 
@@ -137,3 +168,8 @@ molecule-integration/ прогон полного site.yml
 * **`no_log: true` обязателен** для задач с токенами, ключами, kubeconfig и
   credentials. Molecule-сценарий `argocd_bootstrap` проверяет, что приватный
   ключ не утёк в логи и временные файлы.
+* **`node_ip`, а не `ansible_host`,** во всём, что касается адреса узла
+  в кластере: `--node-ip`, `advertiseAddress`, `certSANs`, backend HAProxy,
+  `unicast_peer` keepalived, `/etc/hosts`. `ansible_host` — адрес подключения,
+  и при `connection: docker` он равен имени контейнера. В production-inventory
+  `node_ip: "{{ ansible_host }}"`.

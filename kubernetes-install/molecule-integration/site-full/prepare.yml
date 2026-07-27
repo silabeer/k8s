@@ -2,12 +2,30 @@
 - name: Prepare the test stand
   hosts: all
   become: true
-  gather_facts: true
+  gather_facts: false
 
   tasks:
+    - name: Install python and basic tooling
+      ansible.builtin.raw: |
+        set -e
+        apt-get update -qq
+        apt-get install -y -qq python3 ca-certificates curl gnupg iproute2 iputils-ping psmisc
+      changed_when: true
+
+    - name: Gather facts after bootstrap
+      ansible.builtin.setup:
+
+    # kubelet отказывается стартовать без /dev/kmsg. Устройство пробрасывается
+    # через `devices` в molecule.yml; если хост его не отдаёт, подставляем
+    # /dev/console, как это делает kind.
+    - name: Ensure /dev/kmsg exists
+      ansible.builtin.raw: |
+        test -e /dev/kmsg || ln -s /dev/console /dev/kmsg
+      changed_when: false
+      when: inventory_hostname in groups['kubernetes']
+
     # На стенде нет корпоративного DNS: имя API endpoint резолвится через
-    # /etc/hosts. В production эта запись создаётся заранее (раздел 5.4)
-    # и проверяется preflight.
+    # /etc/hosts. В production запись создаётся заранее (раздел 5.4).
     - name: Point the API endpoint hostname at the VIP
       ansible.builtin.lineinfile:
         path: /etc/hosts

@@ -6,7 +6,7 @@
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 localAPIEndpoint:
-  advertiseAddress: {{ ansible_host }}
+  advertiseAddress: {{ node_ip }}
   bindPort: {{ control_plane_endpoint_port }}
 nodeRegistration:
   name: {{ inventory_hostname }}
@@ -14,7 +14,7 @@ nodeRegistration:
   imagePullPolicy: IfNotPresent
   kubeletExtraArgs:
     - name: node-ip
-      value: {{ ansible_host }}
+      value: {{ node_ip }}
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
@@ -39,7 +39,7 @@ apiServer:
     - {{ api_vip }}
 {% for host in groups['control_plane'] %}
     - {{ host }}
-    - {{ hostvars[host].ansible_host }}
+    - {{ hostvars[host].node_ip }}
 {% endfor %}
   extraArgs:
     # --- Шифрование Secrets в etcd ---
@@ -144,8 +144,13 @@ cgroupDriver: systemd
 
 {# protectKernelDefaults: kubelet НЕ выставляет sysctl, а падает при
    несовпадении. Полный набор из шести значений обеспечивает роль kernel
-   (см. roles/kernel/defaults/main.yml). #}
-protectKernelDefaults: true
+   (см. roles/kernel/defaults/main.yml).
+
+   Переменная существует ради контейнерных тестов: kernel.* не изолируются
+   namespace, и внутри контейнера kubelet видит значения хоста. В production
+   значение обязано оставаться true. #}
+protectKernelDefaults: {{ kubelet_protect_kernel_defaults | bool | lower }}
+failSwapOn: {{ kubelet_fail_swap_on | bool | lower }}
 
 # Клиентский сертификат kubelet ротируется сам; serving-сертификат
 # запрашивается через CSR API и требует аппрува — при bootstrap однократно

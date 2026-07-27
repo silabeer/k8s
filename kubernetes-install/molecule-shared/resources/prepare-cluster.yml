@@ -1,22 +1,43 @@
 ---
-# Общий prepare для сценариев уровня 2, которым нужен работающий кластер.
+# Общий prepare для кластерных сценариев.
 #
-# Поднимает минимальный стенд до состояния «узлы присоединены, CNI ещё нет»,
+# Поднимает стенд до состояния «узлы присоединены, CNI ещё нет»,
 # переиспользуя реальные playbook проекта. Роли, которые тестируются поверх
 # этого состояния, подключают файл из своего prepare.yml.
 
-- name: Resolve the API endpoint on the stand
+- name: Bootstrap the containers
   hosts: all
   become: true
-  gather_facts: true
+  gather_facts: false
+
   tasks:
-    - name: Point the API endpoint hostname at the first control-plane node
-      # На малом стенде выделенной пары LB нет: endpoint указывает
-      # непосредственно на control-plane узел. Для production так делать
-      # нельзя (раздел 3.2), но здесь проверяется не отказоустойчивость VIP.
+    # Базовый образ может не содержать python — до его установки доступен
+    # только raw.
+    - name: Install python and basic tooling
+      ansible.builtin.raw: |
+        set -e
+        apt-get update -qq
+        apt-get install -y -qq python3 ca-certificates curl gnupg iproute2 iputils-ping
+      changed_when: true
+
+    - name: Gather facts after bootstrap
+      ansible.builtin.setup:
+
+    # kubelet отказывается стартовать без /dev/kmsg. Устройство пробрасывается
+    # в контейнер через `devices` в molecule.yml; если хост его не отдаёт,
+    # подставляем /dev/console, как это делает kind.
+    - name: Ensure /dev/kmsg exists
+      ansible.builtin.raw: |
+        test -e /dev/kmsg || ln -s /dev/console /dev/kmsg
+      changed_when: false
+
+    # На стенде нет корпоративного DNS: имя API endpoint резолвится через
+    # /etc/hosts. В production эта запись создаётся заранее (раздел 5.4)
+    # и проверяется preflight.
+    - name: Point the API endpoint hostname at its address
       ansible.builtin.lineinfile:
         path: /etc/hosts
-        line: "{{ hostvars[groups['control_plane'] | first].ansible_host }} {{ control_plane_endpoint_host }}"
+        line: "{{ api_vip }} {{ control_plane_endpoint_host }}"
         regexp: ".*{{ control_plane_endpoint_host }}$"
         state: present
 

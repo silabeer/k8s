@@ -24,10 +24,10 @@ vrrp_instance k8s_api {
 
     # Unicast вместо multicast: во многих корпоративных сегментах
     # multicast VRRP не проходит через коммутацию.
-    unicast_src_ip {{ ansible_host }}
+    unicast_src_ip {{ node_ip }}
     unicast_peer {
 {% for host in groups['load_balancers'] if host != inventory_hostname %}
-        {{ hostvars[host].ansible_host }}
+        {{ hostvars[host].node_ip }}
 {% endfor %}
     }
 

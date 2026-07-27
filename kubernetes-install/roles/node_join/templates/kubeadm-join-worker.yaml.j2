@@ -28,7 +28,7 @@ nodeRegistration:
 {% endif %}
   kubeletExtraArgs:
     - name: node-ip
-      value: {{ ansible_host }}
+      value: {{ node_ip }}
     {#
       ВНИМАНИЕ: сюда попадают только БЕЗДОМЕННЫЕ labels.
       NodeRestriction запрещает kubelet выставлять labels в домене

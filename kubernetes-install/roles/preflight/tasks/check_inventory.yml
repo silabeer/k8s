@@ -26,9 +26,9 @@
     quiet: true
   when: inventory_hostname in groups['kubernetes']
 
-- name: Assert ansible_host addresses are unique
+- name: Assert node addresses are unique
   vars:
-    all_ips: "{{ groups['all'] | map('extract', hostvars, 'ansible_host') | list }}"
+    all_ips: "{{ groups['all'] | map('extract', hostvars, 'node_ip') | list }}"
   ansible.builtin.assert:
     that:
       - all_ips | length == all_ips | unique | length

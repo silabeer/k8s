@@ -36,11 +36,11 @@ provisioner:
       group_vars: ../../../../molecule-shared/group_vars
     host_vars:
       molecule-lb-01:
-        ansible_host: 10.99.0.10
+        node_ip: 10.99.0.10
         keepalived_priority: 150
         keepalived_state: MASTER
       molecule-lb-02:
-        ansible_host: 10.99.0.11
+        node_ip: 10.99.0.11
         keepalived_priority: 100
         keepalived_state: BACKUP
     group_vars:

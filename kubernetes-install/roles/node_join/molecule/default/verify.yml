@@ -55,8 +55,8 @@
              | map(attribute='address') | list }}
       ansible.builtin.assert:
         that:
-          - ansible_host in internal_ips
-        fail_msg: "InternalIP {{ internal_ips }} не совпадает с {{ ansible_host }}."
+          - node_ip in internal_ips
+        fail_msg: "InternalIP {{ internal_ips }} не совпадает с {{ node_ip }}."
         quiet: true
 
     - name: Assert no join configuration was left on disk

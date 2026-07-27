@@ -24,6 +24,9 @@ control_plane_endpoint_host: ~ # "k8s-api.stage.company.local"
 control_plane_endpoint_port: 6443
 control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endpoint_port }}"
 
+# Адрес узла в кластере; отделён от адреса подключения — см. prod-01.
+node_ip: "{{ ansible_host }}"
+
 pod_network_cidr: "10.200.0.0/16"
 service_network_cidr: "10.201.0.0/16"
 cluster_dns: "10.201.0.10"

@@ -32,12 +32,14 @@
 
 - name: Assert node addresses are outside Pod and Service CIDRs
   vars:
-    node_ip: "{{ hostvars[item].ansible_host }}"
+    # Имя отличается от node_ip намеренно: одноимённая переменная затенила бы
+    # node_ip проверяемого узла.
+    checked_ip: "{{ hostvars[item].node_ip }}"
   ansible.builtin.assert:
     that:
-      - node_ip | ansible.utils.ipaddr(pod_network_cidr) is none
-      - node_ip | ansible.utils.ipaddr(service_network_cidr) is none
-    fail_msg: "Адрес узла {{ item }} ({{ node_ip }}) попадает в Pod или Service CIDR."
+      - checked_ip | ansible.utils.ipaddr(pod_network_cidr) is none
+      - checked_ip | ansible.utils.ipaddr(service_network_cidr) is none
+    fail_msg: "Адрес узла {{ item }} ({{ checked_ip }}) попадает в Pod или Service CIDR."
     quiet: true
   loop: "{{ groups['kubernetes'] }}"
   run_once: true
@@ -93,7 +95,7 @@
 # ---------------------------------------------------------------------------
 - name: Check connectivity to every other cluster node
   ansible.builtin.command:
-    cmd: "ping -c 2 -W {{ preflight_connect_timeout }} {{ hostvars[item].ansible_host }}"
+    cmd: "ping -c 2 -W {{ preflight_connect_timeout }} {{ hostvars[item].node_ip }}"
   loop: "{{ groups['all'] | difference([inventory_hostname]) }}"
   register: preflight_ping
   changed_when: false

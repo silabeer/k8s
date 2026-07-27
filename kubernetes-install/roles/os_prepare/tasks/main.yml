@@ -11,7 +11,7 @@
     marker: "# {mark} ANSIBLE MANAGED: kubernetes cluster {{ cluster_name }}"
     block: |
       {% for host in groups['all'] %}
-      {{ hostvars[host].ansible_host }} {{ host }}
+      {{ hostvars[host].node_ip }} {{ host }}
       {% endfor %}
     owner: root
     group: root

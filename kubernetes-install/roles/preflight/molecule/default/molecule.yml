@@ -35,9 +35,9 @@ provisioner:
       group_vars: ../../../../molecule-shared/group_vars
     host_vars:
       molecule-pf-cp-01:
-        ansible_host: 10.99.0.21
+        node_ip: 10.99.0.21
       molecule-pf-worker-01:
-        ansible_host: 10.99.0.31
+        node_ip: 10.99.0.31
     group_vars:
       all:
         # Проверки, требующие реальной сети и внешних систем

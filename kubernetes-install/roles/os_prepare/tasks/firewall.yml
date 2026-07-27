@@ -24,7 +24,7 @@
   community.general.ufw:
     rule: allow
     proto: "112"
-    src: "{{ hostvars[item].ansible_host }}"
+    src: "{{ hostvars[item].node_ip }}"
   loop: "{{ groups['load_balancers'] | difference([inventory_hostname]) }}"
   when: inventory_hostname in groups['load_balancers']
 
@@ -34,7 +34,7 @@
   # их статически невозможно.
   community.general.ufw:
     rule: allow
-    src: "{{ hostvars[item].ansible_host }}"
+    src: "{{ hostvars[item].node_ip }}"
   loop: "{{ groups['kubernetes'] }}"
   when: inventory_hostname in groups['kubernetes']
 

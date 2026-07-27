@@ -141,9 +141,30 @@ apply целиком и выставляет факт для отчёта.
 
 ### 3.5. Molecule уровня 2
 
-`delegated`-драйвер реализован для Vagrant + libvirt (локальная разработка).
-Вызов API виртуализации вынесен в `molecule-integration/resources/provision-<provider>.yml`
-с реализованным `vagrant` и явно помеченной точкой расширения `zvirt`.
+Оба уровня используют driver `docker`. Кластерные сценарии поднимают kubeadm
+внутри контейнеров — тот же приём, что у `kind`: `privileged`, `cgroupns_mode:
+host`, `/lib/modules` только на чтение, проброшенный `/dev/kmsg` и анонимный
+том на `/var/lib/containerd` (overlayfs поверх overlayfs не работает).
+
+Сеть и имена контейнеров уникальны для каждого сценария: `molecule destroy`
+удаляет сеть, и общая сеть у параллельных сценариев в CI даёт гонку.
+
+Три вещи контейнер проверить не позволяет; они выключены явно в общем файле
+переменных и закрыты другими проверками: фактические sysctl
+`protectKernelDefaults` (`kernel.*` не изолируются namespace), отключение swap
+(`/proc/swaps` принадлежит хосту) и отдельный диск под etcd. Для первого
+предусмотрен строгий режим через `make ci-host-prereq` и переменную
+`MOLECULE_HOST_SYSCTLS_SET`.
+
+### 3.7. Разделение адреса подключения и адреса узла
+
+При `connection: docker` переменная `ansible_host` — имя контейнера, поэтому
+адрес узла в кластере вынесен в `node_ip`. Она используется в `--node-ip`,
+`advertiseAddress`, `certSANs`, backend HAProxy, `unicast_peer` keepalived и
+`/etc/hosts`. В production-inventory `node_ip: "{{ ansible_host }}"`.
+
+Разделение оправдано и вне тестов: сеть управления и кластерная сеть совпадают
+не всегда, а подключение может идти через bastion.
 
 ### 3.6. Расположение шаблонов
 

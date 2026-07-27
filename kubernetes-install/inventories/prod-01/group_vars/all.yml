@@ -48,6 +48,14 @@ control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endp
 # -----------------------------------------------------------------------------
 # Сеть кластера
 # -----------------------------------------------------------------------------
+# Адрес узла в кластере: он попадает в --node-ip, advertiseAddress, certSANs,
+# backend HAProxy и /etc/hosts.
+#
+# Отделён от ansible_host намеренно. ansible_host — адрес ПОДКЛЮЧЕНИЯ, и он
+# не всегда совпадает с адресом узла в кластерной сети: при отдельной сети
+# управления, при подключении через bastion, при connection: docker в тестах.
+node_ip: "{{ ansible_host }}"
+
 pod_network_cidr: "10.100.0.0/16"
 service_network_cidr: "10.101.0.0/16"
 cluster_dns: "10.101.0.10"

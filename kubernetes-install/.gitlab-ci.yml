@@ -1,9 +1,13 @@
 ---
-stages: [lint, molecule, molecule-vm]
+stages: [lint, molecule, molecule-cluster]
 
 variables:
   PIP_INDEX_URL: "https://pypi.company.local/simple"
   ANSIBLE_FORCE_COLOR: "true"
+  MOLECULE_IMAGE: "harbor.company.local/test/ubuntu-systemd:24.04"
+  MOLECULE_REGISTRY_HOST: "harbor.company.local"
+  MOLECULE_MIRROR_HOST: "mirror.company.local"
+  MOLECULE_ARTIFACTS_HOST: "artifacts.company.local"
 
 default:
   image: harbor.company.local/ci/ansible-molecule:latest
@@ -18,6 +22,7 @@ lint:
     - ansible-lint
     - make syntax
 
+# Роли, меняющие конфигурацию ОС. Обычные контейнеры, быстрые, на каждый MR.
 molecule:
   stage: molecule
   parallel:
@@ -36,30 +41,87 @@ molecule:
   rules:
     - changes:
         - roles/${ROLE}/**/*
+        - molecule-shared/**/*
         - requirements*.yml
         - requirements-test.txt
 
-# VM-тесты требуют реального ядра, systemd, сети и нескольких узлов.
-# Запускаются на merge в main и по ночному расписанию.
-molecule-vm:
-  stage: molecule-vm
-  tags: [libvirt]
-  script:
-    - cd molecule-integration
-    - molecule test -s site-full
+# Роли, которым нужен работающий кластер. Тоже Docker, но контейнеры-узлы
+# запускаются privileged, с cgroupns host и /dev/kmsg, — раннер должен быть
+# выделенным и работать с Docker-сокетом хоста, а не в DinD.
+#
+# Для строгой проверки protectKernelDefaults на раннере один раз выполняется
+# `make ci-host-prereq`, после чего можно задать MOLECULE_HOST_SYSCTLS_SET.
+.cluster-scenario:
+  stage: molecule-cluster
+  tags: [docker-privileged]
+  variables:
+    MOLECULE_HOST_SYSCTLS_SET: "false"
   after_script:
-    # Стенд уничтожается всегда, чтобы не накапливать дрейф.
-    - cd molecule-integration && molecule destroy -s site-full || true
+    # Стенд уничтожается всегда, чтобы не накапливать дрейф и не оставлять
+    # за собой docker-сети.
+    - cd ${SCENARIO_DIR} && molecule destroy ${SCENARIO_ARGS} || true
+
+molecule-cluster-roles:
+  extends: .cluster-scenario
+  parallel:
+    matrix:
+      - ROLE:
+          - control_plane_init
+          - node_join
+          - cluster_validation
+          - etcd_backup
+  variables:
+    SCENARIO_DIR: "roles/${ROLE}"
+    SCENARIO_ARGS: ""
+  script:
+    - cd roles/${ROLE}
+    - molecule test
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - roles/control_plane_init/**/*
-        - roles/node_join/**/*
-        - roles/cilium_bootstrap/**/*
-        - roles/argocd_bootstrap/**/*
-        - roles/cluster_validation/**/*
+        - roles/${ROLE}/**/*
+        - molecule-shared/**/*
         - playbooks/**/*
 
-# Секреты для тестов (тестовый OpenBao path, deploy key тестового GitOps-репо)
-# задаются CI variables и отделены от production.
+# Сценарии bootstrap-ролей требуют тестового GitOps-репозитория и деплой-ключа.
+# Секреты — только через CI variables, отдельные от production.
+molecule-cluster-bootstrap:
+  extends: .cluster-scenario
+  parallel:
+    matrix:
+      - ROLE:
+          - cilium_bootstrap
+          - argocd_bootstrap
+  variables:
+    SCENARIO_DIR: "roles/${ROLE}"
+    SCENARIO_ARGS: ""
+  script:
+    # Кавычки обязательны: строка содержит `: `, и без них YAML разобрал бы
+    # её как отображение.
+    - 'echo "gitops-deploy-key: |" > roles/${ROLE}/molecule/default/secrets.yml'
+    - 'printf "%s\n" "${MOLECULE_GITOPS_DEPLOY_KEY}" | sed "s/^/  /" >> roles/${ROLE}/molecule/default/secrets.yml'
+    - cd roles/${ROLE}
+    - molecule test
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - roles/${ROLE}/**/*
+        - molecule-shared/**/*
+
+molecule-cluster-site-full:
+  extends: .cluster-scenario
+  variables:
+    SCENARIO_DIR: "molecule-integration"
+    SCENARIO_ARGS: "-s site-full"
+  script:
+    - cd molecule-integration
+    - molecule test -s site-full
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - roles/**/*
+        - playbooks/**/*
+        - molecule-shared/**/*
