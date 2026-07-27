@@ -56,10 +56,16 @@
       ansible.builtin.command:
         cmd: kubeadm certs renew all
       changed_when: true
-      notify: Restart control plane static pods
 
-    - name: Flush handlers to restart static pods now
-      ansible.builtin.meta: flush_handlers
+    # Вызов обычной задачей, а НЕ через handler.
+    #
+    # При включении файла из handler Ansible не выполняет секцию always
+    # включённого блока: проверено на этом же файле — из handler отработали
+    # только задачи block, манифесты остались вне каталога, и control plane
+    # на узле не поднялся. Тот же файл, включённый обычной задачей,
+    # отрабатывает целиком.
+    - name: Restart control plane static pods
+      ansible.builtin.include_tasks: tasks/restart-static-pods.yml
 
     - name: Wait for API server to become ready
       ansible.builtin.uri:
@@ -88,10 +94,3 @@
           ротируются самостоятельно (rotateCertificates), serving-сертификаты
           обслуживает kubelet-csr-approver. Копия старого PKI:
           {{ pki_backup.dest | default('/etc/kubernetes/pki.backup-*') }}
-
-  handlers:
-    # Static pods перезапускаются перемещением манифеста: kubelet удаляет Pod
-    # при исчезновении файла и создаёт заново при появлении. Это надёжнее
-    # `crictl rm`, который kubelet может пережить кэшем.
-    - name: Restart control plane static pods
-      ansible.builtin.include_tasks: tasks/restart-static-pods.yml

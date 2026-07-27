@@ -1,24 +1,32 @@
 ---
-# Вывод узла из кластера.
+# Вывод узла из кластера (раздел 26).
 #
-#   ansible-playbook playbooks/maintenance/remove-node.yml -e node_to_remove=k8s-worker-04
+#   ansible-playbook playbooks/maintenance/remove-node.yml -e node_to_remove=k8s-worker-02
 #
-# Для control-plane узла дополнительно удаляется member etcd — без этого
-# кластер потеряет кворум при следующем перезапуске.
+# Порядок операций значим:
+#   1) drain — вытеснить workload;
+#   2) для control-plane — удалить member etcd, пока узел ещё жив и кворум
+#      цел: иначе оставшиеся члены будут считать его недоступным;
+#   3) на самом узле — остановить kubelet и выполнить kubeadm reset;
+#   4) только теперь удалить объект Node.
+#
+# Удалять объект Node ДО остановки kubelet нельзя: у kubelet остаётся
+# валидный kubelet.conf, и он заново зарегистрирует узел в кластере.
 
-- name: Drain and remove node from cluster
+- name: Validate the removal request
   hosts: control_plane[0]
   gather_facts: false
   any_errors_fatal: true
   become: true
 
-  pre_tasks:
+  tasks:
     - name: Require node_to_remove
       ansible.builtin.assert:
         that:
           - node_to_remove is defined
           - node_to_remove in groups['kubernetes']
         fail_msg: "Укажите -e node_to_remove=<hostname из inventory>"
+        quiet: true
 
     - name: Refuse to remove the bootstrap control-plane node
       ansible.builtin.assert:
@@ -27,6 +35,31 @@
         fail_msg: >-
           Первый control-plane узел выводится отдельной процедурой: сначала
           назначается новый «первый» в inventory, затем удаляется этот.
+          На него ссылаются kubeconfig и delegate_to остальных ролей.
+        quiet: true
+
+    # Кворум etcd — большинство от числа членов. Из трёх членов большинство
+    # равно двум: потеря одного переживается. Из двух большинство тоже два,
+    # то есть отказ любого узла останавливает кластер — чётное число членов
+    # хуже, чем нечётное на единицу меньше.
+    - name: Warn about breaking etcd quorum tolerance
+      ansible.builtin.debug:
+        msg: >-
+          ВНИМАНИЕ: после вывода останется
+          {{ groups['control_plane'] | length - 1 }} control-plane узлов.
+          Чётное число членов etcd не повышает отказоустойчивость: кворум
+          по-прежнему требует {{ ((groups['control_plane'] | length) // 2) + 1 }},
+          но теперь это ВСЕ оставшиеся узлы. Планируйте вывод сразу двух
+          либо ввод замены.
+      when:
+        - node_to_remove in groups['control_plane']
+        - (groups['control_plane'] | length - 1) is even
+
+- name: Drain the node and detach it from etcd
+  hosts: control_plane[0]
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
 
   tasks:
     - name: Cordon and drain the node
@@ -40,10 +73,10 @@
         KUBECONFIG: "{{ kubeconfig_path }}"
       changed_when: true
 
-    - name: Remove etcd member for control-plane node
+    - name: Remove the etcd member of a control-plane node
       when: node_to_remove in groups['control_plane']
       block:
-        - name: Get etcd member list
+        - name: Get the etcd member list
           ansible.builtin.command:
             cmd: >-
               kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
@@ -57,14 +90,23 @@
           register: etcd_members
           changed_when: false
 
-        - name: Extract member id of the node being removed
+        - name: Extract the member id of the node being removed
+          # Список, а не `| first`: по пустой последовательности фильтр first
+          # роняет задачу на этапе рендера, пряча настоящую причину.
           ansible.builtin.set_fact:
-            etcd_member_id: >-
+            etcd_member_ids: >-
               {{ (etcd_members.stdout | from_json).members
                  | selectattr('name', 'equalto', node_to_remove)
-                 | map(attribute='ID') | first | default('') }}
+                 | map(attribute='ID') | list }}
 
-        - name: Remove etcd member
+        - name: Report a node that is not an etcd member
+          ansible.builtin.debug:
+            msg: >-
+              {{ node_to_remove }} отсутствует в списке членов etcd —
+              удалять нечего. Так бывает, если член уже был удалён ранее.
+          when: etcd_member_ids | length == 0
+
+        - name: Remove the etcd member
           ansible.builtin.command:
             cmd: >-
               kubectl -n kube-system exec etcd-{{ inventory_hostname }} --
@@ -72,26 +114,27 @@
               --cacert=/etc/kubernetes/pki/etcd/ca.crt
               --cert=/etc/kubernetes/pki/etcd/server.crt
               --key=/etc/kubernetes/pki/etcd/server.key
-              member remove {{ '%x' | format(etcd_member_id | int) }}
+              member remove {{ '%x' | format(etcd_member_ids | first | int) }}
           environment:
             KUBECONFIG: "{{ kubeconfig_path }}"
-          when: etcd_member_id | length > 0
+          when: etcd_member_ids | length > 0
           changed_when: true
 
-    - name: Delete the node object
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
-        state: absent
-        kind: Node
-        name: "{{ node_to_remove }}"
-
-- name: Reset kubeadm state on the removed node
-  # default нужен для syntax-check без extra vars; фактическое отсутствие
-  # переменной уже поймано assert в первом play.
+- name: Reset kubeadm state on the node being removed
   hosts: "{{ node_to_remove | default('nonexistent-host') }}"
   gather_facts: false
+  any_errors_fatal: true
   become: true
+
   tasks:
+    # Останавливаем kubelet ДО удаления объекта Node: иначе он
+    # перерегистрирует узел, и объект вернётся.
+    - name: Stop and disable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: stopped
+        enabled: false
+
     - name: Run kubeadm reset
       ansible.builtin.command:
         cmd: kubeadm reset --force
@@ -104,6 +147,30 @@
       loop:
         - /etc/cni/net.d
         - /var/lib/cni
+
+- name: Delete the node object
+  hosts: control_plane[0]
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Delete the Node resource
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: absent
+        kind: Node
+        name: "{{ node_to_remove }}"
+
+    - name: Verify the node is gone
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Node
+        name: "{{ node_to_remove }}"
+      register: removed_node
+      until: removed_node.resources | length == 0
+      retries: 12
+      delay: 5
 
     - name: Remind about inventory cleanup
       ansible.builtin.debug:
