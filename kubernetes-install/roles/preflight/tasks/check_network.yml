@@ -135,9 +135,10 @@
 - name: Report a VIP hosted on a cluster node
   ansible.builtin.debug:
     msg: >-
-      api_vip {{ api_vip }} принадлежит узлу кластера, поэтому проверка
-      доступности endpoint пропущена: до kubeadm init на
-      {{ control_plane_endpoint_port }} никто не слушает.
+      api_vip {{ api_vip }} принадлежит узлу кластера, а не внешнему
+      балансировщику, поэтому проверка его доступности пропущена: при
+      установке с нуля на {{ control_plane_endpoint_port }} ещё никто
+      не слушает, и требовать ответа бессмысленно.
       Для production это недопустимая конфигурация (раздел 3.2) — endpoint
       должен обслуживаться отдельным LB.
   when:
