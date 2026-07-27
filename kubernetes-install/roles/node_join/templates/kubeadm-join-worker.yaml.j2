@@ -32,5 +32,8 @@ nodeRegistration:
     # kubernetes.io, поэтому node-role.kubernetes.io/worker здесь быть
     # не может — регистрация узла будет отклонена (B2).
     # Роль назначается после join, см. tasks/assign_labels.yml.
+{% if node_join_kubelet_labels[node_join_type] %}
     - name: node-labels
-      value: {% for key, value in node_join_kubelet_labels.items() %}{{ key }}={{ value }}{% if not loop.last %},{% endif %}{% endfor %}
+      value: {% for key, value in node_join_kubelet_labels[node_join_type].items() %}{{ key }}={{ value }}{% if not loop.last %},{% endif %}{% endfor %}
+
+{% endif %}

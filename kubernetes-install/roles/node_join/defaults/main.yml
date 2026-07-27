@@ -25,8 +25,16 @@ node_join_pool: "{{ node_pool | default('general') }}"
 # Роль узла назначается отдельной задачей от имени admin-контекста
 # (assign_labels.yml).
 # =============================================================================
+# Набор зависит от типа узла: node-pool осмыслен для worker, где по нему
+# работает nodeSelector platform-компонентов (раздел 3.3). Для control-plane
+# он не нужен — там всё определяет taint.
+#
+# Один источник и для шаблонов join, и для проверки в assign_labels:
+# иначе они расходятся, и проверка требует label, который шаблон не ставит.
 node_join_kubelet_labels:
-  node-pool: "{{ node_join_pool }}"
+  worker:
+    node-pool: "{{ node_join_pool }}"
+  control-plane: {}
 
 # Labels, назначаемые после join от имени cluster-admin
 node_join_post_labels:

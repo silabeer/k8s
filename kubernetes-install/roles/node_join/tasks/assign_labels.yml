@@ -29,7 +29,8 @@
   vars:
     actual: "{{ node_join_labeled_node.resources[0].metadata.labels }}"
     expected: >-
-      {{ node_join_kubelet_labels | combine(node_join_post_labels[node_join_type]) }}
+      {{ node_join_kubelet_labels[node_join_type]
+         | combine(node_join_post_labels[node_join_type]) }}
   ansible.builtin.assert:
     that:
       - expected.keys() | difference(actual.keys()) | length == 0

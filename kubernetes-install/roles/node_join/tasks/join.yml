@@ -10,12 +10,14 @@
   changed_when: true
   no_log: true
 
+# Обе строки — в двойных кавычках намеренно. В свёрнутом скаляре (>-) YAML
+# не обрабатывает escape-последовательности, и `\\s` осталось бы двумя
+# символами: регулярное выражение перестало бы совпадать, а `| first` по
+# пустому результату уронил бы задачу с невнятным сообщением.
 - name: Extract token and CA certificate hash
   ansible.builtin.set_fact:
     node_join_token: "{{ node_join_command.stdout | regex_search('--token\\s+(\\S+)', '\\1') | first }}"
-    node_join_ca_hash: >-
-      {{ node_join_command.stdout
-         | regex_search('--discovery-token-ca-cert-hash\\s+(\\S+)', '\\1') | first }}
+    node_join_ca_hash: "{{ node_join_command.stdout | regex_search('--discovery-token-ca-cert-hash\\s+(\\S+)', '\\1') | first }}"
   no_log: true
 
 - name: Assert the join parameters were parsed
@@ -27,7 +29,6 @@
       Не удалось разобрать вывод `kubeadm token create --print-join-command`.
       Формат вывода мог измениться в этой версии kubeadm.
     quiet: true
-  no_log: true
 
 # Сертификаты, загруженные при init, живут в кластере два часа. Для join,
 # выполняемого позже, их надо загрузить заново (раздел 26).
@@ -50,9 +51,10 @@
   ansible.builtin.assert:
     that:
       - node_join_certificate_key is match('[0-9a-f]{64}')
-    fail_msg: "Не удалось получить certificate key из вывода kubeadm."
+    fail_msg: >-
+      Не удалось получить certificate key из вывода
+      `kubeadm init phase upload-certs`.
     quiet: true
-  no_log: true
   when: node_join_type == 'control-plane'
 
 - name: Verify the API endpoint is reachable before joining

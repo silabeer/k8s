@@ -22,3 +22,8 @@ nodeRegistration:
   kubeletExtraArgs:
     - name: node-ip
       value: {{ node_ip }}
+{% if node_join_kubelet_labels[node_join_type] %}
+    - name: node-labels
+      value: {% for key, value in node_join_kubelet_labels[node_join_type].items() %}{{ key }}={{ value }}{% if not loop.last %},{% endif %}{% endfor %}
+
+{% endif %}
