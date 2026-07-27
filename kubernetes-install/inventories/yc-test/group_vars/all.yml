@@ -1,0 +1,208 @@
+---
+# =============================================================================
+# Тестовый стенд в Yandex Cloud.
+#
+# Отличия от prod-01 и их причины перечислены явно — стенд слабее
+# производственного, и это должно быть видно из конфигурации, а не
+# обнаруживаться при отладке.
+# =============================================================================
+
+cluster_name: yc-test
+cluster_environment: test
+
+# -----------------------------------------------------------------------------
+# Версии. Сверены с фактически доступными в upstream 2026-07-27.
+# -----------------------------------------------------------------------------
+kubernetes_version: "1.34.10"
+kubernetes_apt_version: "1.34.10-1.1"
+crictl_version: "1.34.0"
+containerd_version: "2.3.3"
+runc_version: "1.5.1"
+cni_plugins_version: "1.9.1"
+helm_version: "3.21.3"
+
+# Получено у самого kubeadm: `kubeadm config images list --kubernetes-version v1.34.10`
+pause_image_tag: "3.10.1"
+
+# -----------------------------------------------------------------------------
+# API endpoint
+#
+# Выделенной пары LB нет: в Yandex Cloud произвольный VIP на L2 не поднять,
+# для отказоустойчивого endpoint нужен сетевой балансировщик облака.
+# Поэтому endpoint указывает на первый control-plane узел.
+#
+# Для production так делать НЕЛЬЗЯ (раздел 3.2): endpoint зашивается
+# в kubeconfig всех компонентов, и потеря этого узла лишает доступа
+# к API остальные два, хотя etcd-кворум сохранится.
+# -----------------------------------------------------------------------------
+api_vip: "10.129.0.16"
+api_vip_managed: false
+api_vip_interface: "eth0"
+
+# Имя резолвится через /etc/hosts, который ведёт os_prepare: k8s-cp-01
+# входит в cluster_hosts, поэтому отдельная запись не нужна.
+control_plane_endpoint_host: "k8s-cp-01"
+control_plane_endpoint_port: 6443
+control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endpoint_port }}"
+
+# -----------------------------------------------------------------------------
+# Сеть
+# -----------------------------------------------------------------------------
+node_ip: "{{ ansible_host }}" # переопределяется в host_vars приватным адресом
+
+pod_network_cidr: "10.100.0.0/16"
+service_network_cidr: "10.101.0.0/16"
+cluster_dns: "10.101.0.10"
+cluster_domain: "cluster.local"
+node_mtu: 1500
+
+corporate_networks:
+  - "10.129.0.0/24"
+
+# -----------------------------------------------------------------------------
+# Источники образов и пакетов
+#
+# Harbor и внутренних зеркал на стенде нет — всё берётся из upstream.
+# -----------------------------------------------------------------------------
+registry_host: "registry.k8s.io"
+image_repository: "registry.k8s.io"
+pause_image: "registry.k8s.io/pause:{{ pause_image_tag }}"
+
+# Зеркал нет: образы тянутся напрямую. Пустой список — осознанное значение,
+# а не забытая переменная.
+registry_mirrors: []
+
+kubernetes_minor_version: "{{ kubernetes_version | regex_replace('^(\\d+\\.\\d+).*$', '\\1') }}"
+kubernetes_apt_repo_url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor_version }}/deb/"
+kubernetes_apt_repo_key_url: "{{ kubernetes_apt_repo_url }}Release.key"
+
+containerd_install_method: binary
+containerd_tarball_url: >-
+  https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz
+runc_binary_url: "https://github.com/opencontainers/runc/releases/download/v{{ runc_version }}/runc.amd64"
+cni_plugins_tarball_url: >-
+  https://github.com/containernetworking/plugins/releases/download/v{{ cni_plugins_version }}/cni-plugins-linux-amd64-v{{ cni_plugins_version }}.tgz
+helm_tarball_url: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz"
+
+# -----------------------------------------------------------------------------
+# CNI и Argo CD — из публичных Helm-репозиториев
+# -----------------------------------------------------------------------------
+cni:
+  name: cilium
+  version: "1.19.6"
+  chart_source: repo
+  chart_name: cilium
+  chart_repo: "https://helm.cilium.io/"
+  chart_oci: ""
+
+argocd:
+  version: "10.2.1" # чарт argo-cd, appVersion v3.4.5
+  namespace: argocd
+  chart_source: repo
+  chart_name: argo-cd
+  chart_repo: "https://argoproj.github.io/argo-helm"
+  chart_oci: ""
+  field_manager: argocd-controller
+  root_app_automated: false
+
+# -----------------------------------------------------------------------------
+# GitOps
+#
+# ЗАПОЛНИТЬ перед этапами 50 и 60. Заготовка репозитория — в gitops-test/
+# корня проекта. Пока repo_url не задан, эти этапы запускать нельзя:
+# values для Cilium и Argo CD берутся только оттуда (раздел 4.3).
+# -----------------------------------------------------------------------------
+gitops:
+  repo_url: ~
+  revision: main
+  cluster_path: "clusters/{{ cluster_name }}"
+  ssh_host: ~
+  ssh_port: 22
+
+# -----------------------------------------------------------------------------
+# Секреты
+#
+# OpenBao на стенде нет. Ключ шифрования etcd лежит в ansible-vault файле
+# рядом с inventory; он в .gitignore и в репозиторий не попадает.
+# -----------------------------------------------------------------------------
+secret_backend: vault_file
+vault_file_path: "{{ inventory_dir }}/secrets.vault.yml"
+
+etcd_encryption_provider: secretbox
+etcd_encryption_resources:
+  - secrets
+
+# -----------------------------------------------------------------------------
+# Аудит. Диск 20 ГБ, поэтому объём меньше производственного.
+# -----------------------------------------------------------------------------
+audit_log_dir: /var/log/kubernetes/audit
+audit_log_max_age: 7
+audit_log_max_backup: 3
+audit_log_max_size: 50
+
+pod_security_admission_enabled: true
+pod_security_admission_enforce: baseline
+pod_security_admission_enforce_version: latest
+pod_security_admission_audit: restricted
+pod_security_admission_warn: restricted
+pod_security_admission_exempt_namespaces:
+  - kube-system
+
+tls_min_version: VersionTLS12
+tls_cipher_suites:
+  - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+  - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+  - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+  - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+
+# -----------------------------------------------------------------------------
+# Резервы kubelet
+#
+# На узле 3.9 ГБ RAM. Производственные значения (1Gi + 1Gi) съели бы больше
+# половины памяти, а 5Gi + 5Gi ephemeral-storage — больше половины диска.
+# Уменьшены до значений, оставляющих место под workload.
+# -----------------------------------------------------------------------------
+kubelet_system_reserved:
+  cpu: "200m"
+  memory: "512Mi"
+  ephemeral-storage: "1Gi"
+kubelet_kube_reserved:
+  cpu: "200m"
+  memory: "512Mi"
+  ephemeral-storage: "1Gi"
+
+kubelet_eviction_hard:
+  memory.available: "200Mi"
+  nodefs.available: "10%"
+  nodefs.inodesFree: "5%"
+  imagefs.available: "15%"
+
+# -----------------------------------------------------------------------------
+# Время. Образ Yandex Cloud уже синхронизирован через свой NTP.
+# -----------------------------------------------------------------------------
+ntp_servers:
+  - "ntp.yandex.net"
+  - "0.ru.pool.ntp.org"
+ntp_max_offset_seconds: 2
+
+# -----------------------------------------------------------------------------
+# Прочее
+# -----------------------------------------------------------------------------
+kubeconfig_path: /etc/kubernetes/admin.conf
+os_root_ca_certificates: []
+
+# Фильтрацию обеспечивают security groups Yandex Cloud, ufw на узлах
+# только помешал бы Cilium.
+firewall_manage: false
+
+os_http_proxy: ""
+os_https_proxy: ""
+os_no_proxy: "localhost,127.0.0.1,10.129.0.0/24,{{ pod_network_cidr }},{{ service_network_cidr }}"
+
+# Отдельного диска под etcd нет — на ВМ только vda.
+etcd_disk_manage: false
+
+# Репозиторий GitOps появится позже: этапы 00-42 его не используют.
+# ОБЯЗАТЕЛЬНО вернуть в true перед этапами 50 и 60.
+preflight_require_gitops: false
+preflight_check_git: false

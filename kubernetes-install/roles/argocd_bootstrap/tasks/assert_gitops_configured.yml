@@ -1,0 +1,15 @@
+---
+# Репозиторий GitOps — единственный источник values (раздел 4.3). Без него
+# роль работать не может, и сказать об этом надо внятно, а не падать
+# на `git clone ~`.
+
+- name: Assert the GitOps repository is configured
+  ansible.builtin.assert:
+    that:
+      - gitops.repo_url is not none
+      - gitops.repo_url | length > 0
+    fail_msg: >-
+      gitops.repo_url не задан. Values для этого компонента берутся только
+      из GitOps-репозитория; собственного шаблона у Ansible нет.
+      Заполните gitops в group_vars и включите preflight_require_gitops.
+    quiet: true

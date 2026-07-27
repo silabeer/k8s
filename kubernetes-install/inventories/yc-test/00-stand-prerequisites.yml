@@ -1,0 +1,64 @@
+---
+# Подготовка стенда — то, что в production обеспечивается ДО запуска playbook.
+#
+# В production это делают:
+#   * DNS: запись k8s-api.<домен> создаётся заранее (раздел 5.4) и проверяется
+#     preflight;
+#   * golden image: узлы приезжают с корректным hostname (раздел 5.1).
+#
+# На стенде Yandex Cloud ни того, ни другого нет: имена автогенерированные
+# (compute-vm-...), приватного DNS нет. Поэтому эмулируем оба условия здесь.
+# Playbook read-mostly и безопасен для повторного запуска.
+#
+#   ansible-playbook -i inventories/yc-test/hosts.yml \
+#     inventories/yc-test/00-stand-prerequisites.yml
+
+- name: Prepare the Yandex Cloud stand
+  hosts: kubernetes
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Set the hostname to match inventory
+      # kubeadm регистрирует узел под фактическим hostname; расхождение
+      # ломает delegate_to и назначение labels.
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+        use: systemd
+
+    - name: Resolve cluster nodes through /etc/hosts
+      # Заменяет приватный DNS. Сюда же попадает имя API endpoint:
+      # control_plane_endpoint_host совпадает с inventory-именем cp-01.
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} STAND PREREQUISITE: {{ cluster_name }}"
+        block: |
+          {% for host in groups['kubernetes'] %}
+          {{ hostvars[host].node_ip }} {{ host }}
+          {% endfor %}
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Verify the API endpoint resolves to the expected address
+      ansible.builtin.command:
+        cmd: "getent ahostsv4 {{ control_plane_endpoint_host }}"
+      register: stand_endpoint_dns
+      changed_when: false
+
+    - name: Assert the endpoint resolves to api_vip
+      ansible.builtin.assert:
+        that:
+          - api_vip in stand_endpoint_dns.stdout
+        fail_msg: >-
+          {{ control_plane_endpoint_host }} резолвится не в {{ api_vip }}:
+          {{ stand_endpoint_dns.stdout_lines[0] | default('пустой ответ') }}
+        success_msg: "{{ control_plane_endpoint_host }} -> {{ api_vip }}"
+        quiet: true
+
+    - name: Report the prepared state
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} ({{ node_ip }}): hostname приведён
+          к inventory, узлы кластера резолвятся через /etc/hosts.
+          Теперь можно запускать playbooks/00-preflight.yml.

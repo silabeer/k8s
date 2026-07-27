@@ -21,15 +21,26 @@
       - item.value | string | length > 0
     fail_msg: "Переменная `{{ item.name }}` не задана."
     quiet: true
-  loop:
-    - name: "cni.version"
-      value: "{{ cni.version }}"
-    - name: "argocd.version"
-      value: "{{ argocd.version }}"
-    - name: "gitops.repo_url"
-      value: "{{ gitops.repo_url }}"
+  loop: >-
+    {{ [{'name': 'cni.version', 'value': cni.version},
+        {'name': 'argocd.version', 'value': argocd.version}]
+       + ([{'name': 'gitops.repo_url', 'value': gitops.repo_url}]
+          if preflight_require_gitops | bool else []) }}
   loop_control:
     label: "{{ item.name }}"
+  run_once: true
+
+# Репозиторий нужен только этапам 50 и 60. Требовать его на этапе 00 значит
+# запретить поэтапное развёртывание, поэтому проверка отключаема. Сами
+# bootstrap-роли отказываются работать с незаданным repo_url независимо
+# от этого флага.
+- name: Report deferred GitOps configuration
+  ansible.builtin.debug:
+    msg: >-
+      preflight_require_gitops=false — gitops.repo_url не проверяется.
+      Задайте его перед playbooks/50-cni-bootstrap.yml, иначе этап
+      остановится: values для Cilium и Argo CD берутся только из репозитория.
+  when: not (preflight_require_gitops | bool)
   run_once: true
 
 - name: Assert versions do not carry a v prefix

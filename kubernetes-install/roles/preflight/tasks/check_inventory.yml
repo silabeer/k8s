@@ -15,16 +15,33 @@
     quiet: true
   run_once: true
 
+# Расхождение имени фатально только если его никто не исправит: os_prepare
+# на этапе 10 приводит hostname к inventory_hostname. Жёсткий отказ здесь
+# создавал бы порочный круг — preflight не пропускает узел, который сам же
+# проект и должен переименовать.
 - name: Assert inventory hostname matches actual hostname
   ansible.builtin.assert:
     that:
       - inventory_hostname == ansible_hostname
     fail_msg: >-
       inventory_hostname `{{ inventory_hostname }}` не совпадает с фактическим
-      hostname `{{ ansible_hostname }}`. kubeadm регистрирует узел под фактическим
+      hostname `{{ ansible_hostname }}`, а os_prepare_manage_hostname выключен —
+      значит, имя никто не исправит. kubeadm регистрирует узел под фактическим
       именем, из-за расхождения сломается delegate_to и назначение labels.
     quiet: true
-  when: inventory_hostname in groups['kubernetes']
+  when:
+    - inventory_hostname in groups['kubernetes']
+    - not (os_prepare_manage_hostname | default(true) | bool)
+
+- name: Report hostname that will be changed
+  ansible.builtin.debug:
+    msg: >-
+      Фактический hostname `{{ ansible_hostname }}` будет изменён на
+      `{{ inventory_hostname }}` ролью os_prepare (этап 10).
+  when:
+    - inventory_hostname in groups['kubernetes']
+    - inventory_hostname != ansible_hostname
+    - os_prepare_manage_hostname | default(true) | bool
 
 - name: Assert node addresses are unique
   vars:

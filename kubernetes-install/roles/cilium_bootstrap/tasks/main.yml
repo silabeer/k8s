@@ -1,4 +1,7 @@
 ---
+- name: Assert the GitOps repository is configured
+  ansible.builtin.import_tasks: assert_gitops_configured.yml
+
 - name: Check whether Cilium is already managed by Argo CD
   ansible.builtin.import_tasks: assert_not_argocd_owned.yml
 

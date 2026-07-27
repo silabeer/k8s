@@ -34,6 +34,10 @@ preflight_min_kernel_version: "5.15"
 
 preflight_check_registry: true
 preflight_check_git: true
+
+# Требовать заданный gitops.repo_url. Выключается только при поэтапном
+# развёртывании, когда репозиторий появится позже этапов 00-42.
+preflight_require_gitops: true
 preflight_check_helm_source: true
 preflight_check_package_repo: true
 preflight_check_artifacts: true

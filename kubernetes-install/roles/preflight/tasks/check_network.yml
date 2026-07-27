@@ -104,9 +104,23 @@
   failed_when: preflight_ping.rc != 0
   when: preflight_check_connectivity | bool
 
+# api_vip_managed=false означает две разные ситуации, и различать их
+# обязательно:
+#
+#   * VIP обслуживает внешний корпоративный LB — он существует независимо
+#     от кластера и обязан отвечать ДО установки (раздел 3.2);
+#   * VIP — это адрес самого control-plane узла (малый стенд без LB).
+#     Тогда на 6443 до `kubeadm init` заведомо никто не слушает, и ожидание
+#     ответа — заведомо невыполнимое условие.
+#
+# Различаем по тому, принадлежит ли адрес узлу кластера.
+- name: Determine whether the VIP belongs to a cluster node
+  ansible.builtin.set_fact:
+    preflight_vip_is_cluster_node: >-
+      {{ api_vip in (groups['kubernetes'] | map('extract', hostvars, 'node_ip') | list) }}
+  run_once: true
+
 - name: Check external VIP availability
-  # При api_vip_managed=false VIP обслуживает внешний корпоративный LB — он
-  # обязан отвечать до начала установки (раздел 3.2).
   ansible.builtin.wait_for:
     host: "{{ api_vip }}"
     port: "{{ control_plane_endpoint_port }}"
@@ -114,7 +128,21 @@
     state: started
   when:
     - not (api_vip_managed | bool)
+    - not (preflight_vip_is_cluster_node | bool)
     - preflight_check_connectivity | bool
+  run_once: true
+
+- name: Report a VIP hosted on a cluster node
+  ansible.builtin.debug:
+    msg: >-
+      api_vip {{ api_vip }} принадлежит узлу кластера, поэтому проверка
+      доступности endpoint пропущена: до kubeadm init на
+      {{ control_plane_endpoint_port }} никто не слушает.
+      Для production это недопустимая конфигурация (раздел 3.2) — endpoint
+      должен обслуживаться отдельным LB.
+  when:
+    - not (api_vip_managed | bool)
+    - preflight_vip_is_cluster_node | bool
   run_once: true
 
 # ---------------------------------------------------------------------------
