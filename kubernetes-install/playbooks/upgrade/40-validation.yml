@@ -49,5 +49,23 @@
   gather_facts: true
   any_errors_fatal: true
   become: true
+
   roles:
     - role: cluster_validation
+      # Сразу после обновления ожидаемая версия — целевая, а не та, что
+      # записана в inventory: оператор ещё не успел его поправить.
+      # Без этого валидация падала бы с «версии kubelet не совпадают»,
+      # хотя обновление прошло успешно.
+      kubernetes_version: "{{ kubernetes_target_version }}"
+
+  post_tasks:
+    - name: Remind to update the inventory
+      ansible.builtin.debug:
+        msg: >-
+          ОБНОВЛЕНИЕ ЗАВЕРШЕНО. Приведите inventory в соответствие с
+          кластером, иначе следующий же прогон любого playbook будет
+          спорить с реальностью:
+            kubernetes_version: "{{ kubernetes_target_version }}"
+            kubernetes_apt_version: "{{ kubernetes_target_apt_version }}"
+          Проверьте также pause_image_tag: `kubeadm config images list
+          --kubernetes-version v{{ kubernetes_target_version }}`.

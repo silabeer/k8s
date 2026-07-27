@@ -13,8 +13,8 @@ cluster_environment: test
 # -----------------------------------------------------------------------------
 # Версии. Сверены с фактически доступными в upstream 2026-07-27.
 # -----------------------------------------------------------------------------
-kubernetes_version: "1.34.10"
-kubernetes_apt_version: "1.34.10-1.1"
+kubernetes_version: "1.35.7"
+kubernetes_apt_version: "1.35.7-1.1"
 crictl_version: "1.34.0"
 containerd_version: "2.3.3"
 runc_version: "1.5.1"
@@ -89,7 +89,7 @@ helm_tarball_url: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.
 # -----------------------------------------------------------------------------
 cni:
   name: cilium
-  version: "1.19.6"
+  version: "1.20.0-rc.1"
   chart_source: repo
   chart_name: cilium
   chart_repo: "https://helm.cilium.io/"
@@ -115,7 +115,10 @@ gitops:
   # Публичный репозиторий по HTTPS: аутентификация не нужна, деплой-ключ
   # не создаётся. Роли определяют способ доступа по схеме URL.
   repo_url: "https://github.com/silabeer/argocd-test"
-  revision: main
+  # Ветка, а не main: проверяется обновление Cilium до 1.20.0-rc.1, а
+  # release candidate на main не место. Ветка содержит и собственный
+  # targetRevision во всех Application, иначе root вернул бы main.
+  revision: cilium-1.20
   cluster_path: "clusters/{{ cluster_name }}"
   ssh_host: ~
   ssh_port: 22

@@ -1,0 +1,74 @@
+---
+# Переключение apt-репозитория на целевую minor-версию.
+#
+# pkgs.k8s.io держит ОТДЕЛЬНЫЙ репозиторий для каждой minor-версии:
+# core:/stable:/v1.34, core:/stable:/v1.35 и так далее. Пока источник
+# указывает на текущую ветку, пакетов целевой версии в нём нет, и
+# `apt install kubeadm=1.35.x` завершается «no available installation
+# candidate». Внутренние зеркала обычно повторяют ту же раскладку.
+#
+# URL целевой ветки получается подстановкой minor-версии в существующий
+# kubernetes_apt_repo_url: так сохраняются адрес зеркала и структура пути,
+# какими бы они ни были в конкретном контуре.
+
+- name: Compute the target repository URL
+  ansible.builtin.set_fact:
+    upgrade_target_minor: "{{ kubernetes_target_version | regex_replace('^(\\d+\\.\\d+).*$', '\\1') }}"
+
+- name: Build the target repository URL
+  ansible.builtin.set_fact:
+    upgrade_repo_url: >-
+      {{ kubernetes_apt_repo_url
+         | replace('v' ~ kubernetes_minor_version, 'v' ~ upgrade_target_minor) }}
+
+- name: Assert the URL actually changed
+  # Если подстановка не сработала, установка молча продолжила бы тянуть
+  # пакеты из старой ветки и упала бы позже с невнятной ошибкой.
+  ansible.builtin.assert:
+    that:
+      - upgrade_repo_url != kubernetes_apt_repo_url
+    fail_msg: >-
+      Не удалось построить URL репозитория для {{ upgrade_target_minor }}
+      из {{ kubernetes_apt_repo_url }}. Проверьте, что адрес содержит
+      подстроку v{{ kubernetes_minor_version }}.
+    quiet: true
+
+- name: Download the target repository key
+  ansible.builtin.get_url:
+    url: "{{ upgrade_repo_url }}Release.key"
+    dest: /tmp/kubernetes-apt-key-upgrade.asc
+    mode: "0644"
+    force: true
+  register: upgrade_repo_key
+  retries: 3
+  delay: 5
+  until: upgrade_repo_key is succeeded
+
+- name: Install the target repository keyring
+  ansible.builtin.command:
+    cmd: >-
+      gpg --dearmor --yes
+      -o {{ kubernetes_packages_keyring_path | default('/etc/apt/keyrings/kubernetes-apt-keyring.gpg') }}
+      /tmp/kubernetes-apt-key-upgrade.asc
+  changed_when: true
+
+- name: Remove the downloaded key file
+  ansible.builtin.file:
+    path: /tmp/kubernetes-apt-key-upgrade.asc
+    state: absent
+
+- name: Point the apt source at the target minor version
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by={{ kubernetes_packages_keyring_path | default('/etc/apt/keyrings/kubernetes-apt-keyring.gpg') }}]
+      {{ upgrade_repo_url }} /
+    filename: kubernetes
+    state: present
+    update_cache: true
+
+- name: Assert the target version is now installable
+  ansible.builtin.command:
+    cmd: "apt-cache madison kubeadm"
+  register: upgrade_madison
+  changed_when: false
+  failed_when: kubernetes_target_apt_version not in upgrade_madison.stdout

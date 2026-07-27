@@ -22,6 +22,11 @@
       delegate_to: "{{ groups['control_plane'] | first }}"
       changed_when: true
 
+    # Репозиторий apt закреплён за текущей minor-версией: пакетов целевой
+    # ветки в нём нет. Переключаем источник до установки.
+    - name: Switch the apt repository to the target minor version
+      ansible.builtin.include_tasks: tasks/switch-apt-repo.yml
+
     - name: Unhold kubeadm package
       ansible.builtin.dpkg_selections:
         name: kubeadm
