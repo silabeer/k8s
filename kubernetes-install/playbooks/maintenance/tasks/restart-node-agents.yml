@@ -1,0 +1,81 @@
+---
+# Перезапуск агентов, чьё состояние выведено из watch-подписок.
+#
+# Вызывается из restore-etcd.yml обычной задачей, не handler: секция always
+# не выполняется, когда файл включён из handler.
+#
+# Список задаётся переменной, потому что состав зависит от контура:
+# при kubeProxyReplacement kube-proxy нет вовсе, CNI может быть не Cilium.
+# Отсутствующий DaemonSet не считается ошибкой.
+
+- name: Check which node agents are present
+  ansible.builtin.command:
+    cmd: >-
+      kubectl -n {{ item.namespace }} get daemonset {{ item.name }}
+      -o jsonpath={.metadata.name}
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  loop: "{{ restore_node_agents }}"
+  loop_control:
+    label: "{{ item.namespace }}/{{ item.name }}"
+  register: restore_agents_present
+  failed_when: false
+  changed_when: false
+
+- name: Restart the node agents
+  ansible.builtin.command:
+    cmd: "kubectl -n {{ item.item.namespace }} rollout restart daemonset/{{ item.item.name }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  loop: "{{ restore_agents_present.results }}"
+  loop_control:
+    label: "{{ item.item.namespace }}/{{ item.item.name }}"
+  when: item.rc == 0
+  changed_when: true
+
+# Порядок важен: пока агент не раскатан, узел остаётся со старой таблицей
+# правил. Следующие проверки без этого дают ложноположительный результат.
+- name: Wait for the restarted agents to roll out
+  ansible.builtin.command:
+    cmd: >-
+      kubectl -n {{ item.item.namespace }}
+      rollout status daemonset/{{ item.item.name }} --timeout={{ restore_agent_rollout_timeout }}
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  loop: "{{ restore_agents_present.results }}"
+  loop_control:
+    label: "{{ item.item.namespace }}/{{ item.item.name }}"
+  when: item.rc == 0
+  changed_when: false
+
+# Проверка результата, а не факта перезапуска: сервис kubernetes должен иметь
+# ровно столько адресов, сколько control-plane узлов. Именно эта запись
+# оказывалась пустой, и именно из-за неё поды теряли доступ к API.
+- name: Verify the kubernetes service has all endpoints
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      kubectl get endpointslices -n default
+      -l kubernetes.io/service-name=kubernetes
+      -o jsonpath='{range .items[*]}{.endpoints[*].addresses}{"\n"}{end}'
+      | tr ' ' '\n' | grep -c .
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: restore_api_endpoints
+  retries: 12
+  delay: 10
+  until: restore_api_endpoints.stdout | trim | int == groups['control_plane'] | length
+  changed_when: false
+
+- name: Report the state of node agents
+  ansible.builtin.debug:
+    msg: >-
+      Агенты перезапущены, у сервиса kubernetes
+      {{ restore_api_endpoints.stdout | trim }} endpoint(ов).
+      ПРОВЕРЬТЕ ДОСТУП К API ИЗНУТРИ ПОДА, а не только с хоста: kubectl с
+      узла ходит на его адрес напрямую и неисправность ClusterIP не покажет.
+      Контроллеры с долгоживущими watch-подписками (Argo CD, операторы)
+      могли остаться с устаревшим кешем — перезапустите те, что не
+      реконсилируют.

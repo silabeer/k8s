@@ -61,6 +61,16 @@
     # окажется негодным, у оператора остаётся то, что было.
     restore_keep_previous_data: true
 
+    # Агенты, чьё состояние выведено из watch-подписок и после отката
+    # расходится с кластером. Отсутствующий в кластере DaemonSet
+    # пропускается: при kubeProxyReplacement kube-proxy нет вовсе.
+    restore_node_agents:
+      - namespace: kube-system
+        name: kube-proxy
+      - namespace: kube-system
+        name: cilium
+    restore_agent_rollout_timeout: 300s
+
   pre_tasks:
     - name: Require explicit confirmation
       ansible.builtin.assert:
@@ -305,6 +315,26 @@
           retries: 60
           delay: 10
           until: restore_readyz.status == 200
+
+        # ---------------------------------------------------------------------
+        # Агенты на узлах ОБЯЗАНЫ быть перезапущены после отката.
+        #
+        # Восстановление откатывает resourceVersion назад, и watch-подписки
+        # агентов рвутся. Они переподключаются, но состояние, выведенное из
+        # прежних подписок, остаётся: kube-proxy сохраняет таблицу iptables,
+        # CNI — карты BPF. Само это не чинится.
+        #
+        # Наблюдалось на живом кластере ровно так: kube-proxy решил, что у
+        # сервиса kubernetes нет endpoint'ов, и записал правило
+        #   -A KUBE-SERVICES -d <ClusterIP> ... "has no endpoints" -j REJECT
+        # а у Cilium запись сервиса в BPF осталась с пустым списком backend.
+        # Итог — поды не достают до apiserver, при этом узлы Ready, поды
+        # Running, а kubectl с хоста работает: он ходит на адрес узла напрямую,
+        # минуя ClusterIP. Кластер выглядит здоровым и им нельзя управлять.
+        # ---------------------------------------------------------------------
+        - name: Restart node agents whose state is derived from watches
+          ansible.builtin.include_tasks: tasks/restart-node-agents.yml
+          when: inventory_hostname == groups['control_plane'] | first
 
       rescue:
         - name: Report the failure
