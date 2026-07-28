@@ -1,0 +1,366 @@
+---
+# Восстановление etcd из снимка (раздел 28.4).
+#
+# ОПЕРАЦИЯ РАЗРУШАЮЩАЯ. Кластер возвращается к состоянию на момент снимка:
+# всё, что появилось позже, исчезает. Control plane недоступен на всё время
+# восстановления. Рабочие нагрузки на worker-узлах продолжают работать, но
+# без apiserver ими нельзя управлять, а после восстановления kubelet приведёт
+# их в соответствие с восстановленным состоянием.
+#
+# Порядок продиктован тем, что etcd — кластер из трёх членов. Восстановить
+# один член из снимка нельзя: остальные два сохранят прежнюю историю и
+# отвергнут его. Поэтому снимок разворачивается на ВСЕХ узлах, и все три
+# члена стартуют как новый кластер с новым cluster ID, но со старыми данными.
+#
+#   1) остановить apiserver на всех узлах — чтобы никто не писал в etcd;
+#   2) остановить etcd на всех узлах;
+#   3) убрать прежний каталог данных;
+#   4) развернуть ОДИН И ТОТ ЖЕ снимок на каждом узле, передав полный
+#      список членов;
+#   5) вернуть etcd, дождаться кворума;
+#   6) вернуть остальные статические поды.
+#
+# Шаги 1 и 2 обязаны завершиться на всех узлах до начала шага 3, поэтому
+# serial здесь НЕДОПУСТИМ: линейная стратегия Ansible даёт нужный барьер на
+# каждой задаче.
+#
+# etcd 3.6 удалил `etcdctl snapshot restore` — восстановление выполняет
+# `etcdutl`. Он лежит в образе etcd, а на время восстановления etcd
+# остановлен, поэтому утилита запускается разовым контейнером через ctr.
+#
+# ВАЖНО: Secrets в снимке зашифрованы. Для восстановления нужен тот ключ,
+# которым они были записаны, причём под тем же ИМЕНЕМ (раздел 28.2).
+# Снимок, снятый во время ротации, требует оба ключа.
+#
+# Запуск:
+#   ansible-playbook playbooks/maintenance/restore-etcd.yml \
+#     -e restore_snapshot_path=/var/backups/etcd/etcd-snapshot-20260728T185636.db \
+#     -e restore_confirm=<cluster_name>
+#
+# Снимок должен лежать на ПЕРВОМ control-plane узле по указанному пути;
+# playbook сам разложит его на остальные. Если снимок хранится во внешнем
+# хранилище, сначала положите его на этот узел.
+
+- name: Restore etcd from a snapshot
+  hosts: control_plane
+  gather_facts: true
+  any_errors_fatal: true
+  become: true
+
+  vars:
+    restore_work_dir: /var/lib/etcd-restore
+    restore_hold_dir: /etc/kubernetes/manifests-restore
+    restore_data_dir: /var/lib/etcd
+    # Порядок значим: apiserver уходит первым, возвращается последним.
+    restore_static_pods:
+      - kube-apiserver.yaml
+      - kube-controller-manager.yaml
+      - kube-scheduler.yaml
+      - etcd.yaml
+    # Прежний каталог данных не удаляется, а переименовывается: если снимок
+    # окажется негодным, у оператора остаётся то, что было.
+    restore_keep_previous_data: true
+
+  pre_tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - restore_confirm is defined
+          - restore_confirm == cluster_name
+        fail_msg: >-
+          Восстановление откатывает кластер к состоянию снимка и уничтожает
+          всё, что появилось позже. Подтвердите именем кластера:
+          -e restore_confirm={{ cluster_name }}
+        quiet: true
+
+    - name: Require the snapshot path
+      ansible.builtin.assert:
+        that:
+          - restore_snapshot_path is defined
+          - restore_snapshot_path | length > 0
+        fail_msg: >-
+          Укажите снимок: -e restore_snapshot_path=/var/backups/etcd/<файл>.db
+          Путь читается на узле {{ groups['control_plane'] | first }}.
+        quiet: true
+
+    - name: Verify the snapshot exists on the source node
+      ansible.builtin.stat:
+        path: "{{ restore_snapshot_path }}"
+      register: restore_snapshot_stat
+      delegate_to: "{{ groups['control_plane'] | first }}"
+      run_once: true
+
+    - name: Fail when the snapshot is missing
+      ansible.builtin.assert:
+        that:
+          - restore_snapshot_stat.stat.exists
+          - restore_snapshot_stat.stat.size > 0
+        fail_msg: >-
+          Снимок {{ restore_snapshot_path }} не найден на узле
+          {{ groups['control_plane'] | first }} либо пуст.
+        quiet: true
+      run_once: true
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # Подготовка. Ничего разрушающего: если что-то не так, выходим до остановки
+    # control plane.
+    # -------------------------------------------------------------------------
+    - name: Read the etcd image reference from the static pod manifest
+      ansible.builtin.slurp:
+        src: "/etc/kubernetes/manifests/etcd.yaml"
+      register: restore_etcd_manifest
+
+    - name: Extract the etcd image reference
+      ansible.builtin.set_fact:
+        restore_etcd_image: >-
+          {{ restore_etcd_manifest.content | b64decode
+             | regex_search('image:\s*(\S+)', '\1') | first }}
+
+    - name: Report the image used for restore
+      ansible.builtin.debug:
+        msg: "etcdutl будет запущен из образа {{ restore_etcd_image }}"
+
+    - name: Create the working directory
+      ansible.builtin.file:
+        path: "{{ restore_work_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # fetch складывает файл на управляющую машину, поэтому ему нужен
+    # контроллерный путь, а не путь на узле.
+    - name: Create a temporary directory on the controller
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: etcd-restore-
+      register: restore_cache
+      delegate_to: localhost
+      # become: false как ключевое слово здесь не работает: инвентарь задаёт
+      # ansible_become переменной, а переменная перебивает ключевое слово.
+      vars:
+        ansible_become: false
+      run_once: true
+
+    - name: Fetch the snapshot from the source node
+      ansible.builtin.fetch:
+        src: "{{ restore_snapshot_path }}"
+        dest: "{{ restore_cache.path }}/snapshot.db"
+        flat: true
+      delegate_to: "{{ groups['control_plane'] | first }}"
+      run_once: true
+
+    - name: Distribute the snapshot to every control-plane node
+      ansible.builtin.copy:
+        src: "{{ restore_cache.path }}/snapshot.db"
+        dest: "{{ restore_work_dir }}/snapshot.db"
+        owner: root
+        group: root
+        mode: "0600"
+
+    # Проверка до разрушения: негодный снимок должен остановить playbook,
+    # пока кластер ещё работает.
+    - name: Verify snapshot integrity on every node
+      ansible.builtin.command:
+        cmd: >-
+          ctr -n k8s.io run --rm
+          --mount type=bind,src={{ restore_work_dir }},dst=/restore,options=rbind:ro
+          {{ restore_etcd_image }} restore-status-{{ inventory_hostname }}
+          etcdutl snapshot status /restore/snapshot.db -w json
+      register: restore_snapshot_status
+      changed_when: false
+
+    - name: Report snapshot contents
+      ansible.builtin.debug:
+        msg: >-
+          Снимок: ревизия {{ (restore_snapshot_status.stdout | from_json).revision }},
+          ключей {{ (restore_snapshot_status.stdout | from_json).totalKey }},
+          hash {{ (restore_snapshot_status.stdout | from_json).hash }}.
+          Кластер будет откачен к этому состоянию.
+
+    - name: Build the member list for the restored cluster
+      ansible.builtin.set_fact:
+        restore_initial_cluster: "{% for h in groups['control_plane'] %}{{ h }}=https://{{ hostvars[h].node_ip }}:2380{{ ',' if not loop.last }}{% endfor %}"
+
+    # -------------------------------------------------------------------------
+    # Разрушающая часть. Всё, что вынесено из каталога манифестов, обязано
+    # вернуться — поэтому возврат стоит в always, а не в конце block.
+    # Секция always не выполняется, когда файл включён из handler (проверено
+    # дважды на живом кластере), поэтому здесь всё — обычные задачи.
+    # -------------------------------------------------------------------------
+    - name: Restore etcd
+      block:
+        - name: Create the holding directory for static pod manifests
+          ansible.builtin.file:
+            path: "{{ restore_hold_dir }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Stop control plane static pods
+          ansible.builtin.command:
+            cmd: "mv /etc/kubernetes/manifests/{{ item }} {{ restore_hold_dir }}/{{ item }}"
+            removes: "/etc/kubernetes/manifests/{{ item }}"
+          loop: "{{ restore_static_pods }}"
+
+        - name: Wait until control plane containers are gone
+          ansible.builtin.shell:
+            cmd: "set -o pipefail; crictl ps -q --name 'etcd|kube-apiserver' | wc -l"
+          args:
+            executable: /bin/bash
+          register: restore_containers
+          retries: 30
+          delay: 5
+          until: restore_containers.stdout | trim == "0"
+          changed_when: false
+
+        # Каталог данных может быть отдельным томом, поэтому переносится его
+        # содержимое, а не он сам: mv точки монтирования невозможен.
+        - name: Move the previous member directory aside
+          ansible.builtin.command:
+            cmd: >-
+              mv {{ restore_data_dir }}/member
+              {{ restore_data_dir }}/member.pre-restore-{{ ansible_date_time.iso8601_basic_short }}
+            removes: "{{ restore_data_dir }}/member"
+          when: restore_keep_previous_data | bool
+
+        - name: Remove the previous member directory
+          ansible.builtin.file:
+            path: "{{ restore_data_dir }}/member"
+            state: absent
+          when: not restore_keep_previous_data | bool
+
+        - name: Restore the snapshot into a staging directory
+          ansible.builtin.command:
+            cmd: >-
+              ctr -n k8s.io run --rm
+              --mount type=bind,src={{ restore_work_dir }},dst=/restore,options=rbind:rw
+              {{ restore_etcd_image }} restore-{{ inventory_hostname }}
+              etcdutl snapshot restore /restore/snapshot.db
+              --name {{ inventory_hostname }}
+              --initial-cluster {{ restore_initial_cluster }}
+              --initial-advertise-peer-urls https://{{ node_ip }}:2380
+              --data-dir /restore/data
+            creates: "{{ restore_work_dir }}/data/member"
+
+        - name: Move the restored data into the etcd data directory
+          ansible.builtin.command:
+            cmd: "mv {{ restore_work_dir }}/data/member {{ restore_data_dir }}/member"
+            creates: "{{ restore_data_dir }}/member"
+
+        - name: Enforce ownership on the restored data
+          ansible.builtin.file:
+            path: "{{ restore_data_dir }}/member"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+            recurse: true
+
+        - name: Return the etcd manifest
+          ansible.builtin.command:
+            cmd: "mv {{ restore_hold_dir }}/etcd.yaml /etc/kubernetes/manifests/etcd.yaml"
+            removes: "{{ restore_hold_dir }}/etcd.yaml"
+
+        - name: Wait for the etcd client port to accept connections
+          ansible.builtin.wait_for:
+            host: "{{ node_ip }}"
+            port: 2379
+            timeout: 300
+
+        # Гейт перед возвратом apiserver: поднимать его поверх неполного
+        # кластера etcd бессмысленно.
+        - name: Wait for the restored etcd cluster to report a full quorum
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail;
+              ctr -n k8s.io run --rm --net-host
+              --mount type=bind,src=/etc/kubernetes/pki/etcd,dst=/pki,options=rbind:ro
+              {{ restore_etcd_image }} restore-health-{{ inventory_hostname }}-$$
+              etcdctl --endpoints=https://{{ node_ip }}:2379
+              --cacert=/pki/ca.crt --cert=/pki/server.crt --key=/pki/server.key
+              member list | wc -l
+          args:
+            executable: /bin/bash
+          register: restore_members
+          retries: 30
+          delay: 10
+          until: restore_members.stdout | trim == (groups['control_plane'] | length) | string
+          changed_when: false
+
+        - name: Return the remaining control plane manifests
+          ansible.builtin.command:
+            cmd: "mv {{ restore_hold_dir }}/{{ item }} /etc/kubernetes/manifests/{{ item }}"
+            removes: "{{ restore_hold_dir }}/{{ item }}"
+          loop: "{{ restore_static_pods | reject('equalto', 'etcd.yaml') | list }}"
+
+        - name: Wait for the API server to become ready
+          ansible.builtin.uri:
+            url: "https://127.0.0.1:6443/readyz"
+            validate_certs: false
+            status_code: 200
+          register: restore_readyz
+          retries: 60
+          delay: 10
+          until: restore_readyz.status == 200
+
+      rescue:
+        - name: Report the failure
+          ansible.builtin.fail:
+            msg: >-
+              Восстановление на узле {{ inventory_hostname }} прервано.
+              Манифесты статических подов возвращены на место секцией always,
+              но состояние etcd может быть промежуточным. Прежний каталог
+              данных сохранён как
+              {{ restore_data_dir }}/member.pre-restore-*, если
+              restore_keep_previous_data не выключали.
+
+      always:
+        - name: Find manifests left in the holding directory
+          ansible.builtin.find:
+            paths: "{{ restore_hold_dir }}"
+            patterns: "*.yaml"
+          register: restore_stranded
+
+        - name: Return every stranded manifest
+          ansible.builtin.command:
+            cmd: "mv {{ item.path }} /etc/kubernetes/manifests/{{ item.path | basename }}"
+            removes: "{{ item.path }}"
+          loop: "{{ restore_stranded.files }}"
+          loop_control:
+            label: "{{ item.path | basename }}"
+
+        - name: Remove the holding directory
+          ansible.builtin.file:
+            path: "{{ restore_hold_dir }}"
+            state: absent
+
+        - name: Remove the distributed snapshot
+          ansible.builtin.file:
+            path: "{{ restore_work_dir }}"
+            state: absent
+
+        - name: Remove the controller-side copy of the snapshot
+          ansible.builtin.file:
+            path: "{{ restore_cache.path }}"
+            state: absent
+          delegate_to: localhost
+          vars:
+            ansible_become: false
+          run_once: true
+          when: restore_cache.path is defined
+
+  post_tasks:
+    - name: Report what remains to be done
+      ansible.builtin.debug:
+        msg: >-
+          etcd восстановлен из снимка. Дальше по разделу 28.4:
+          проверьте узлы и рабочие нагрузки, затем восстановите stateful-данные
+          приложений — снимок etcd их не содержит. Объекты, созданные после
+          снимка, исчезли; Argo CD вернёт то, что описано в Git, при следующей
+          синхронизации. Прежний каталог данных сохранён как
+          {{ restore_data_dir }}/member.pre-restore-* — удалите, когда
+          убедитесь в работоспособности.
+      when: inventory_hostname == groups['control_plane'] | first
