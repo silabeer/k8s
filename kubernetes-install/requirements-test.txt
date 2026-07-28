@@ -4,8 +4,6 @@
 # ansible-core >= 2.16 обязателен: kubeadm v1beta4 и containerd 2.x требуют
 # современных фильтров и поведения kubernetes.core 5.x.
 ansible-core==2.17.6
-molecule==24.9.0
-molecule-plugins[docker]==23.5.3
 docker==7.1.0
 ansible-lint==24.9.2
 yamllint==1.35.1

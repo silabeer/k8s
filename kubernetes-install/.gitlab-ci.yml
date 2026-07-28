@@ -1,16 +1,17 @@
 ---
-stages: [lint, molecule, molecule-cluster]
+# Контейнерные сценарии (Molecule) из проекта удалены: проверка выполняется
+# статическим анализом на каждый MR и прогоном на стенде из виртуальных машин
+# (раздел 25 документа). Стенд разворачивается вне CI — он требует облачных
+# ресурсов и живёт дольше пайплайна.
+
+stages: [lint]
 
 variables:
   PIP_INDEX_URL: "https://pypi.company.local/simple"
   ANSIBLE_FORCE_COLOR: "true"
-  MOLECULE_IMAGE: "harbor.company.local/test/ubuntu-systemd:24.04"
-  MOLECULE_REGISTRY_HOST: "harbor.company.local"
-  MOLECULE_MIRROR_HOST: "mirror.company.local"
-  MOLECULE_ARTIFACTS_HOST: "artifacts.company.local"
 
 default:
-  image: harbor.company.local/ci/ansible-molecule:latest
+  image: harbor.company.local/ci/ansible:latest
   before_script:
     - pip install -r requirements-test.txt
     - ansible-galaxy collection install -r requirements.yml -p collections
@@ -20,109 +21,8 @@ lint:
   script:
     - yamllint .
     - ansible-lint
+    # Проверяет, что условия assert остались строками: `: ` внутри
+    # незакавыченного условия делает его отображением YAML, и условие молча
+    # перестаёт проверяться. Ни yamllint, ни ansible-lint этого не видят.
     - python3 scripts/check-assert-conditions.py
     - make syntax
-
-# Роли, меняющие конфигурацию ОС. Обычные контейнеры, быстрые, на каждый MR.
-molecule:
-  stage: molecule
-  parallel:
-    matrix:
-      - ROLE:
-          - preflight
-          - kernel
-          - os_prepare
-          - containerd
-          - kubernetes_packages
-          - kubeadm_config
-          - haproxy_keepalived
-  script:
-    - cd roles/${ROLE}
-    - molecule test
-  rules:
-    - changes:
-        - roles/${ROLE}/**/*
-        - molecule-shared/**/*
-        - requirements*.yml
-        - requirements-test.txt
-
-# Роли, которым нужен работающий кластер. Тоже Docker, но контейнеры-узлы
-# запускаются privileged, с cgroupns host и /dev/kmsg, — раннер должен быть
-# выделенным и работать с Docker-сокетом хоста, а не в DinD.
-#
-# Для строгой проверки protectKernelDefaults на раннере один раз выполняется
-# `make ci-host-prereq`, после чего можно задать MOLECULE_HOST_SYSCTLS_SET.
-.cluster-scenario:
-  stage: molecule-cluster
-  tags: [docker-privileged]
-  variables:
-    MOLECULE_HOST_SYSCTLS_SET: "false"
-  after_script:
-    # Стенд уничтожается всегда, чтобы не накапливать дрейф и не оставлять
-    # за собой docker-сети.
-    - cd ${SCENARIO_DIR} && molecule destroy ${SCENARIO_ARGS} || true
-
-molecule-cluster-roles:
-  extends: .cluster-scenario
-  parallel:
-    matrix:
-      - ROLE:
-          - control_plane_init
-          - node_join
-          - cluster_validation
-          - etcd_backup
-  variables:
-    SCENARIO_DIR: "roles/${ROLE}"
-    SCENARIO_ARGS: ""
-  script:
-    - cd roles/${ROLE}
-    - molecule test
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - roles/${ROLE}/**/*
-        - molecule-shared/**/*
-        - playbooks/**/*
-
-# Сценарии bootstrap-ролей требуют тестового GitOps-репозитория и деплой-ключа.
-# Секреты — только через CI variables, отдельные от production.
-molecule-cluster-bootstrap:
-  extends: .cluster-scenario
-  parallel:
-    matrix:
-      - ROLE:
-          - cilium_bootstrap
-          - argocd_bootstrap
-  variables:
-    SCENARIO_DIR: "roles/${ROLE}"
-    SCENARIO_ARGS: ""
-  script:
-    # Кавычки обязательны: строка содержит `: `, и без них YAML разобрал бы
-    # её как отображение.
-    - 'echo "gitops-deploy-key: |" > roles/${ROLE}/molecule/default/secrets.yml'
-    - 'printf "%s\n" "${MOLECULE_GITOPS_DEPLOY_KEY}" | sed "s/^/  /" >> roles/${ROLE}/molecule/default/secrets.yml'
-    - cd roles/${ROLE}
-    - molecule test
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - roles/${ROLE}/**/*
-        - molecule-shared/**/*
-
-molecule-cluster-site-full:
-  extends: .cluster-scenario
-  variables:
-    SCENARIO_DIR: "molecule-integration"
-    SCENARIO_ARGS: "-s site-full"
-  script:
-    - cd molecule-integration
-    - molecule test -s site-full
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - roles/**/*
-        - playbooks/**/*
-        - molecule-shared/**/*

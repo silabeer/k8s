@@ -1,8 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  tasks:
-    - name: Apply the kubernetes_packages role
-      ansible.builtin.include_role:
-        name: kubernetes_packages

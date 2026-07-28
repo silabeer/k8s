@@ -1,6 +1,6 @@
 # Playbook установки Kubernetes и первоначальной настройки кластера
 
-Версия 2.1. Учтены результаты валидации: аппрув kubelet serving CSR, sysctl для `protectKernelDefaults`, роль load balancer, шифрование Secrets в etcd, audit policy apiserver, процедура передачи Cilium под Argo CD, resource reservation kubelet, containerd 2.x registry config, регламент etcd snapshot, стратегия taints/labels, архитектурное решение по топологии Argo CD, тестирование ролей Molecule.
+Версия 2.1. Учтены результаты валидации: аппрув kubelet serving CSR, sysctl для `protectKernelDefaults`, роль load balancer, шифрование Secrets в etcd, audit policy apiserver, процедура передачи Cilium под Argo CD, resource reservation kubelet, containerd 2.x registry config, регламент etcd snapshot, стратегия taints/labels, архитектурное решение по топологии Argo CD, тестирование.
 
 ## Изменения версии 2.1
 
@@ -23,7 +23,7 @@
 * Добавлены Pod Security Admission и TLS-политика в `kubeadm init` (раздел 14.2).
 * `evictionHard` дополнен `nodefs.inodesFree` (раздел 14.2).
 * Переменная `environment` переименована в `cluster_environment` — исходное имя зарезервировано Ansible (раздел 6).
-* Шаблоны перенесены в каталоги ролей (раздел 7), пример `molecule.yml` приведён к схеме Molecule 6+ (раздел 25.3).
+* Шаблоны перенесены в каталоги ролей (раздел 7).
 * Тестирование целиком переведено на driver `docker`: кластерные сценарии поднимают kubeadm внутри контейнеров, зависимость от гипервизора и VM-стенда убрана. Введена переменная `node_ip`, отделяющая адрес узла в кластере от адреса подключения (раздел 25.3).
 
 ## 1. Назначение документа
@@ -408,7 +408,6 @@ kubernetes-install/
 │   └── site.yml
 ├── roles/
 │   ├── preflight/
-│   │   └── molecule/default/
 │   ├── haproxy_keepalived/
 │   ├── os_prepare/
 │   ├── kernel/
@@ -421,16 +420,12 @@ kubernetes-install/
 │   ├── argocd_bootstrap/
 │   ├── etcd_backup/
 │   └── cluster_validation/
-│       (каждая роль содержит molecule/default/ — см. раздел 25)
-├── molecule-shared/
-│   ├── group_vars/          # общие переменные molecule-сценариев
 │   └── resources/           # create/destroy ВМ для delegated-драйвера
-├── molecule-integration/
 │   └── site-full/
 └── Makefile
 ```
 
-Шаблоны лежат в `roles/<role>/templates/`, а не в общем каталоге `templates/`: общий каталог не виден изолированным molecule-сценариям ролей, и роль перестаёт быть самодостаточной.
+Шаблоны лежат в `roles/<role>/templates/`, а не в общем каталоге `templates/`: с общим каталогом роль перестаёт быть самодостаточной и её нельзя применить отдельно от остального проекта.
 
 Соответствие шаблонов ролям:
 
@@ -1545,255 +1540,58 @@ kubectl get applications -n argocd
 
 ---
 
-# 25. Тестирование ролей: Molecule
+# 25. Тестирование
 
-Каждая роль Ansible сопровождается тестами Molecule. Роль без сценария Molecule не принимается в main.
+Проект проверяется тремя слоями: статическим анализом на каждый MR, прогоном на стенде из виртуальных машин и регламентными сценариями на нём же. Контейнерные сценарии (Molecule) из проекта удалены — практика показала, что стенд из ВМ находит то, чего контейнер не воспроизводит, а поддержка второго стенда стоила дороже пользы.
 
-## 25.1. Инструменты и версии
+## 25.1. Статические проверки
 
 ```text
-molecule
-molecule-plugins[docker]     # или [podman]
-ansible-lint
 yamllint
-pytest + testinfra           # verify-слой, опционально вместо verify.yml
+ansible-lint
+ansible-playbook --syntax-check
+scripts/check-assert-conditions.py
 ```
 
-Версии закрепляются в `requirements-test.txt` и устанавливаются из внутреннего PyPI mirror. Образы для тестов (ubuntu 24.04 с systemd) зеркалируются в Harbor.
+Запускаются одной командой `make lint`, обязательны на каждый MR.
 
-## 25.2. Структура
+Последняя проверка написана по следам конкретного отказа: `: ` внутри незакавыченного условия `assert` превращает его в отображение YAML, условие молча перестаёт проверяться, и ни yamllint, ни ansible-lint, ни `--syntax-check` этого не видят.
 
-Сценарии живут внутри каждой роли:
+Линтеры запускать **в версиях из `requirements-test.txt`**. На ansible-lint 6.x проект даёт ложные ошибки: схема той версии не знает Ubuntu noble, а без `netaddr` не работает фильтр `ipaddr` в роли `preflight`.
 
-```text
-roles/
-├── os_prepare/
-│   ├── molecule/
-│   │   └── default/
-│   │       ├── molecule.yml
-│   │       ├── converge.yml
-│   │       ├── verify.yml
-│   │       └── prepare.yml
-│   ├── tasks/
-│   └── ...
-├── containerd/
-│   └── molecule/default/...
-└── ...
-```
+## 25.2. Стенд из виртуальных машин
 
-## 25.3. Два уровня тестирования
+Минимальная топология — три control-plane и два worker-узла; пятый узел держится вне inventory и вводится отдельно, чтобы проверить расширение кластера.
 
-Роли делятся на два класса — по тому, что им нужно от тестовой среды.
+Обязательный набор перед выпуском изменений:
 
-### Уровень 1. Контейнерные тесты (docker/podman driver)
+| Что | Чем проверяется |
+| --- | --------------- |
+| установка с нуля | `site.yml` целиком, одной командой |
+| расширение | `maintenance/add-node.yml` |
+| вывод узла | `maintenance/remove-node.yml` |
+| продление PKI | `maintenance/renew-control-plane-certs.yml` |
+| ротация ключа шифрования | `maintenance/rotate-etcd-encryption-key.yml`, все четыре фазы |
+| резервное копирование | `80-backup.yml` с ожиданием срабатывания таймера |
+| восстановление | `maintenance/restore-etcd.yml` |
+| обновление | `upgrade/`, по порядку номеров |
 
-Подходит для ролей, изменяющих конфигурацию ОС без реальной работы ядра и кластера:
+Проверять результат следует на живом кластере, а не по коду возврата Ansible: узлы `Ready`, кворум etcd, префикс шифрования записей в etcd, возврат манифестов статических подов, отсутствие подов вне `Running`.
 
-* `os_prepare` (без проверки фактического swapoff и загрузки modules — проверяются конфиги);
-* `kernel` (рендер конфигов modules-load.d, sysctl.d);
-* `containerd` (установка пакета, рендер config.toml и hosts.toml, старт сервиса — требуется systemd-образ);
-* `kubernetes_packages` (установка, version hold, unit включён);
-* `kubeadm_config` (рендер kubeadm-init/join YAML, валидация `kubeadm config validate`);
-* `haproxy_keepalived` (рендер конфигов, `haproxy -c -f`, синтаксис keepalived);
-* `preflight` (логика проверок на mock-фактах).
+Ротацию ключа и восстановление нельзя считать проверенными без контрольных объектов. Для ротации — секрет, записанный до неё и прочитанный после. Для восстановления — объекты, созданные ПОСЛЕ снятия снимка: если они не исчезли, восстановление не состоялось.
 
-Пример `molecule.yml`:
+## 25.3. Чего стенд в облаке не проверяет
 
-```yaml
-dependency:
-  name: galaxy
-driver:
-  name: docker
-platforms:
-  - name: ubuntu-2404
-    image: harbor.company.local/test/ubuntu-systemd:24.04
-    command: /lib/systemd/systemd
-    privileged: false
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    tmpfs:
-      - /run
-      - /tmp
-provisioner:
-  name: ansible
-  inventory:
-    # Общие переменные подключаются ссылкой, чтобы не дублировать
-    # полсотни значений в каждом сценарии
-    links:
-      group_vars: ../../../../molecule-shared/group_vars
-    group_vars:
-      all:
-        containerd_version: "2.x.y"
-verifier:
-  name: ansible
-```
+| Что | Препятствие |
+| --- | ----------- |
+| роль `haproxy_keepalived` вживую | произвольный VIP на L2 в облаке не поднять; нужен bare-metal или сеть с поддержкой VRRP |
+| отдельный диск под etcd | требует ВМ с дополнительным томом |
+| работа через внутренние зеркала и Harbor | нужен закрытый контур |
+| OpenBao как секрет-бэкенд | нужен OpenBao |
+| приватный GitOps-репозиторий по SSH | нужен deploy key |
+| отказные пути `preflight` | прогон идёт по счастливому пути; проверяется подстановкой заведомо неверных значений вручную |
 
-Ключ `lint` в `molecule.yml` **не используется**: он удалён в Molecule 6. Линтеры запускаются отдельно — из `Makefile` и стадии `lint` в CI.
-
-В контейнере невозможны: swapoff, загрузка kernel modules, часть sysctl. Такие задачи в ролях помечаются условием (`when: not molecule_test | default(false)`) либо проверяется только результат рендера конфигурации — фактическое применение покрывается уровнем 2.
-
-### Уровень 2. Кластерные тесты (тот же docker driver)
-
-Для ролей, которым нужен работающий кластер:
-
-* `control_plane_init`;
-* `node_join`;
-* `cilium_bootstrap`;
-* `argocd_bootstrap`;
-* `cluster_validation`;
-* `etcd_backup`;
-* интеграционный сценарий полного `site.yml`.
-
-Driver тот же — `docker`. kubeadm поднимается **внутри контейнеров**, как это делает `kind`. Виртуальные машины не используются: единый драйвер снимает зависимость от гипервизора, ускоряет прогон и позволяет запускать кластерные сценарии на том же раннере, что и контейнерные.
-
-Требования к контейнеру-узлу:
-
-| Параметр | Зачем |
-| -------- | ----- |
-| `privileged: true` | монтирование, запись в cgroup, iptables |
-| `cgroupns_mode: host` + `/sys/fs/cgroup:rw` | cgroup v2 для kubelet и containerd |
-| `/lib/modules:ro` | kubelet и Cilium читают сведения о модулях |
-| `devices: /dev/kmsg` | без него kubelet не стартует |
-| анонимный том на `/var/lib/containerd` | overlayfs поверх overlayfs не работает |
-
-```yaml
-driver:
-  name: docker
-platforms:
-  - name: molecule-cpinit-cp-01
-    image: harbor.company.local/test/ubuntu-systemd:24.04
-    command: /lib/systemd/systemd
-    privileged: true
-    cgroupns_mode: host
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-      - /lib/modules:/lib/modules:ro
-      - /var/lib/containerd
-    tmpfs: [/run, /tmp]
-    devices:
-      - /dev/kmsg:/dev/kmsg:rwm
-    docker_networks:
-      - name: molecule-cpinit
-        ipam_config:
-          - subnet: 172.30.1.0/24
-    networks:
-      - name: molecule-cpinit
-        ipv4_address: 172.30.1.21
-    groups: [control_plane, kubernetes]
-```
-
-Сеть и имена контейнеров **уникальны для каждого сценария**: `molecule destroy` удаляет сеть, и общая сеть у параллельных сценариев в CI приводила бы к гонке.
-
-**Адрес узла отделён от адреса подключения.** При `connection: docker` переменная `ansible_host` — это имя контейнера, поэтому адрес узла в кластере вынесен в отдельную переменную `node_ip`. Она попадает в `--node-ip`, `advertiseAddress`, `certSANs`, backend HAProxy и `/etc/hosts`. В production-inventory `node_ip: "{{ ansible_host }}"`. Разделение полезно и вне тестов: адреса сети управления и кластерной сети совпадают не всегда.
-
-### Что контейнерный стенд не проверяет
-
-Три вещи в контейнере проверить нельзя. Они выключены явно, в общем файле переменных, а не спрятаны по сценариям:
-
-| Что | Почему | Чем закрыто |
-| --- | ------ | ----------- |
-| фактические sysctl `protectKernelDefaults` | `kernel.*` не изолируются namespace, внутри контейнера видны значения хоста; Docker не даёт задать их через `sysctls` | сценарий роли `kernel` сверяет отрендеренный `sysctl.d` с набором, который требует kubelet |
-| отключение swap | `/proc/swaps` показывает swap хоста, а `swapoff` из privileged-контейнера отключил бы его на хосте | ручная проверка при вводе узла; в контейнере `failSwapOn: false` |
-| отдельный диск под etcd | блочное устройство контейнеру не подключить | `/var/lib/etcd` вынесен в анонимный docker-том, что даёт настоящую ФС вместо overlay |
-
-Для первого пункта предусмотрен строгий режим: если хост CI подготовлен (`make ci-host-prereq` выставляет шесть нужных sysctl) и задана переменная `MOLECULE_HOST_SYSCTLS_SET=true`, сценарии работают с `protectKernelDefaults: true` и проверяют настоящее поведение kubelet.
-
-## 25.4. Что проверяет verify
-
-Обязательный минимум по классам ролей:
-
-**Конфигурационные роли** — файл существует, права корректны, содержимое соответствует переменным, сервис active и enabled, повторный converge не даёт changed (идемпотентность — встроенный шаг `molecule idempotence`, обязателен для всех сценариев).
-
-**`containerd`** — `crictl info` возвращает валидный JSON, `SystemdCgroup=true` в effective config, pull тестового образа через mirror.
-
-**`control_plane_init`** — `admin.conf` существует; `kubectl get --raw /readyz` отвечает ok; static pods apiserver/etcd/scheduler/controller-manager Running; apiserver запущен с флагами `--encryption-provider-config` и `--audit-policy-file`; audit.log непустой; повторный converge **не** выполняет `kubeadm init` (ключевой тест идемпотентности из раздела 24).
-
-**`kernel`** — фактические значения всех **шести** sysctl из набора `protectKernelDefaults` в `/proc/sys` совпадают с ожидаемыми kubelet (регрессия на блокер раздела 11); модули `overlay` и `br_netfilter` загружены.
-
-**`node_join`** — узел появился в `kubectl get nodes`; повторный converge не выполняет join; label `node-pool` назначен при регистрации, а `node-role.kubernetes.io/worker` — после join (регрессия на блокер раздела 16.1); файл join-конфигурации с токеном удалён с диска.
-
-**`cilium_bootstrap`** — все узлы `Ready`; `cilium status` без ошибок; в кластере отсутствует helm release secret `sh.helm.release.v1.cilium*` (контроль установки через `helm template`); повторный converge при наличии Argo CD Application `cilium` в `Synced` пропускает применение.
-
-**`argocd_bootstrap`** — Pod'ы argocd Ready; root Application создан, без finalizer и без `syncPolicy.automated`; git credential Secret существует, помечен `argocd.argoproj.io/secret-type: repository` и не содержит plaintext в логах прогона (проверка отсутствия секретов в выводе — grep по артефактам CI); checkout GitOps-репозитория удалён.
-
-**`haproxy_keepalived`** — `haproxy -c` успешен; VIP поднимается; при остановке haproxy на master VIP переезжает (только VM-уровень).
-
-## 25.5. Интеграция в CI (GitLab)
-
-```yaml
-stages: [lint, molecule, molecule-vm]
-
-lint:
-  stage: lint
-  script:
-    - yamllint .
-    - ansible-lint
-
-molecule:
-  stage: molecule
-  parallel:
-    matrix:
-      - ROLE: [os_prepare, kernel, containerd, kubernetes_packages,
-               kubeadm_config, haproxy_keepalived, preflight]
-  script:
-    - cd roles/${ROLE}
-    - molecule test
-  rules:
-    - changes:
-        - roles/${ROLE}/**/*
-        - requirements*.yml
-
-molecule-vm:
-  stage: molecule-vm
-  script:
-    - cd molecule-integration
-    - molecule test -s site-full
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - roles/control_plane_init/**/*
-        - roles/node_join/**/*
-        - roles/cilium_bootstrap/**/*
-        - roles/argocd_bootstrap/**/*
-        - playbooks/**/*
-```
-
-Правила:
-
-* тесты ролей, меняющих конфигурацию ОС, — на каждый MR, только для изменённых ролей;
-* кластерные тесты — на merge в main и по ночному расписанию (полный `site.yml` с последующим прогоном роли `cluster_validation`);
-* MR не мержится при падении lint или тестов уровня 1; падение ночного кластерного прогона — блокер релиза playbook;
-* стенд уничтожается после прогона (`molecule destroy` в `after_script`), чтобы не накапливать дрейф и не оставлять за собой docker-сети;
-* кластерные сценарии требуют раннера с доступом к Docker-сокету хоста и правом запускать privileged-контейнеры; DinD не подходит;
-* секреты для тестов (тестовый OpenBao path, deploy key тестового GitOps-репо) — только через CI variables, отдельные от production.
-
-## 25.6. Makefile
-
-```makefile
-lint:
-	yamllint . && ansible-lint
-
-test-role:
-	cd roles/$(ROLE) && molecule test
-
-test-all-roles:
-	for r in roles/*/; do (cd $$r && [ -d molecule ] && molecule test) || exit 1; done
-
-test-integration:
-	cd molecule-integration && molecule test -s site-full
-
-# Строгий режим kubelet: выставляет на ЭТОМ хосте шесть sysctl, которые
-# проверяет protectKernelDefaults. Выполнять только на выделенном раннере.
-ci-host-prereq:
-	sudo sysctl -w vm.overcommit_memory=1 vm.panic_on_oom=0 \
-	             kernel.panic=10 kernel.panic_on_oops=1 \
-	             kernel.keys.root_maxkeys=1000000 \
-	             kernel.keys.root_maxbytes=25000000
-```
-
----
+Эти пункты закрываются на предпродуктивном контуре, а не на облачном стенде.
 
 # 26. Повторное присоединение узлов
 
@@ -1997,7 +1795,7 @@ Argo CD восстанавливает cluster configuration
 * протестирована потеря одного control-plane узла;
 * протестирован failover Load Balancer;
 * подготовлены инструкции: добавление/удаление узла, обновление Kubernetes, восстановление, ротация ключа шифрования etcd, продление PKI control plane;
-* все роли покрыты тестами Molecule, контейнерные тесты проходят в CI, интеграционный VM-прогон `site.yml` зелёный;
+* статические проверки зелёные в CI, прогон `site.yml` с нуля на стенде из ВМ пройден без отказов, регламентные сценарии раздела 25.2 проверены на живом кластере;
 * отсутствуют ручные кластерные изменения, не отражённые в Git.
 
 ---

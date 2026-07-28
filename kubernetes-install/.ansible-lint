@@ -4,14 +4,8 @@ profile: production
 exclude_paths:
   - collections/
   - .ansible_facts/
-  - molecule-shared/resources/.vagrant/
   # Файлы секретов и справочные YAML — не playbook, линтер пытается разобрать
   # их как список plays и падает.
-  - roles/kubeadm_config/molecule/default/secrets.yml
-  - roles/haproxy_keepalived/molecule/default/secrets.yml
-  - roles/cilium_bootstrap/molecule/default/secrets.yml
-  - roles/argocd_bootstrap/molecule/default/secrets.yml
-  - molecule-shared/resources/molecule-small-stand.yml
 
 skip_list:
   # kubeadm/helm/cilium не имеют идемпотентных модулей; вызовы command обёрнуты

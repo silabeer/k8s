@@ -1,4 +1,0 @@
----
-# Переменные сценария. Вынесены в файл, потому что molecule игнорирует
-# inline host_vars/group_vars при заданном links.
-containerd_verify_pull: false

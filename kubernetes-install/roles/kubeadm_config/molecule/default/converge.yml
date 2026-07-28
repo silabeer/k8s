@@ -1,8 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  tasks:
-    - name: Apply the kubeadm_config role
-      ansible.builtin.include_role:
-        name: kubeadm_config

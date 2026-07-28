@@ -1,5 +1,0 @@
----
-# Кластер до состояния «узлы присоединены, CNI ещё нет» поднимается общим
-# файлом, переиспользующим реальные playbook проекта.
-- name: Prepare the cluster stand
-  import_playbook: ../../../../molecule-shared/resources/prepare-cluster.yml

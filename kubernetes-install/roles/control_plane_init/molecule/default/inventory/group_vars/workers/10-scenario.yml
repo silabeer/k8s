@@ -1,7 +1,0 @@
----
-# Переменные сценария. Вынесены в файл, потому что molecule игнорирует
-# inline host_vars/group_vars при заданном links.
-preflight_min_cpu: 1
-preflight_min_ram_mb: 900
-preflight_min_disk_root_gb: 5
-node_pool: general

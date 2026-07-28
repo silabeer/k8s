@@ -3,15 +3,7 @@ collections/
 *.retry
 artifacts/
 
-# Molecule
-molecule-shared/resources/.vagrant/
-**/molecule/**/.molecule/
-
-# Секреты. Файлы secrets.yml в сценариях kubeadm_config и haproxy_keepalived
-# содержат заведомо тестовые значения и коммитятся намеренно; сценариям
-# bootstrap-ролей нужен настоящий deploy key, который создаёт CI.
-roles/cilium_bootstrap/molecule/default/secrets.yml
-roles/argocd_bootstrap/molecule/default/secrets.yml
+# Секреты
 **/vault-pass*
 **/*.vault.yml.decrypted
 inventories/*/secrets.vault.yml

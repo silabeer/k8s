@@ -47,6 +47,6 @@ node_join_readyz_delay: 5
 
 # Путь к CRI-сокету. Дублируется здесь намеренно: defaults роли containerd
 # в этой роли не видны, а шаблоны на него ссылаются. Роль обязана оставаться
-# самодостаточной для molecule; значение из inventory переопределяет
+# самодостаточной; значение из inventory переопределяет
 # defaults и держит оба места в согласии.
 containerd_socket: /run/containerd/containerd.sock

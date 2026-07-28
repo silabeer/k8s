@@ -154,7 +154,7 @@ argocd:
 # Секреты
 # -----------------------------------------------------------------------------
 # openbao    — community.hashi_vault lookup (production)
-# vault_file — ansible-vault файл (локальная разработка, molecule)
+# vault_file — ansible-vault файл (локальная разработка и стенд)
 secret_backend: openbao
 
 openbao_url: "https://openbao.company.local"

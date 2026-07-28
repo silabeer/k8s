@@ -4,7 +4,6 @@ extends: default
 ignore: |
   collections/
   .ansible_facts/
-  molecule-integration/.vagrant/
 
 rules:
   line-length:

@@ -1,8 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  tasks:
-    - name: Apply the preflight role
-      ansible.builtin.include_role:
-        name: preflight

@@ -42,7 +42,7 @@ kernel_sysctl_extra:
   net.core.somaxconn: 32768
   net.ipv4.conf.all.forwarding: 1
 
-# В контейнере (molecule уровня 1) записать значения в /proc невозможно:
+# В контейнере записать значения в /proc невозможно:
 # sysctl kernel.* и часть net.* находятся вне сетевого namespace.
 # Файл конфигурации при этом рендерится и проверяется.
 kernel_sysctl_enforce: >-
