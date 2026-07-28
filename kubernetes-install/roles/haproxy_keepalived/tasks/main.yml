@@ -3,20 +3,40 @@
   ansible.builtin.assert:
     that:
       - haproxy_package_version is not none
-      - keepalived_package_version is not none
+      - keepalived_package_version is not none or not (keepalived_enabled | bool)
     fail_msg: >-
       Версии haproxy и keepalived должны быть закреплены
       (haproxy_package_version, keepalived_package_version).
     quiet: true
 
+# Пара балансировщиков без keepalived не даёт отказоустойчивости: второй
+# узел просто не получит трафик, потому что общего адреса нет. Такая
+# конфигурация почти всегда означает недосмотр, а не намерение.
+- name: Refuse a load balancer pair without keepalived
+  ansible.builtin.assert:
+    that:
+      - groups['load_balancers'] | length == 1
+    fail_msg: >-
+      keepalived_enabled=false при {{ groups['load_balancers'] | length }}
+      балансировщиках. Общего адреса нет, второй узел трафик не получит.
+      Либо включите keepalived, либо оставьте один балансировщик и
+      обеспечьте отказоустойчивость снаружи (ADR 0001).
+    quiet: true
+  when: not (keepalived_enabled | bool)
+  run_once: true
+
+# Единственный секрет роли — пароль VRRP. Без keepalived протокола нет,
+# и требовать пароль означало бы заставлять оператора класть в бэкенд
+# значение, которое нигде не используется.
 - name: Resolve secrets
   ansible.builtin.import_tasks: resolve_secrets.yml
+  when: keepalived_enabled | bool
 
 - name: Install haproxy and keepalived
   ansible.builtin.apt:
-    name:
-      - "haproxy={{ haproxy_package_version }}"
-      - "keepalived={{ keepalived_package_version }}"
+    name: "{{ ['haproxy=' ~ haproxy_package_version]
+              + (['keepalived=' ~ keepalived_package_version]
+                 if keepalived_enabled | bool else []) }}"
     state: present
     update_cache: true
     allow_change_held_packages: true
@@ -25,9 +45,7 @@
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: hold
-  loop:
-    - haproxy
-    - keepalived
+  loop: "{{ ['haproxy'] + (['keepalived'] if keepalived_enabled | bool else []) }}"
 
 - name: Allow binding to a non-local address
   ansible.posix.sysctl:
@@ -57,6 +75,7 @@
     group: root
     mode: "0755"
   notify: Restart keepalived
+  when: keepalived_enabled | bool
 
 - name: Render keepalived configuration
   ansible.builtin.template:
@@ -67,6 +86,7 @@
     mode: "0640"
   no_log: true
   notify: Restart keepalived
+  when: keepalived_enabled | bool
 
 - name: Enable and start haproxy
   ansible.builtin.systemd:
@@ -82,7 +102,51 @@
     enabled: true
     state: started
     daemon_reload: true
+  when:
+    - haproxy_manage_services | bool
+    - keepalived_enabled | bool
+
+# Обязательно ДО проверки. Установка пакета на реальной машине сразу
+# запускает службу со стоковым конфигом, в котором frontend'а нет, поэтому
+# задача «Enable and start» оказывается пустой — служба уже работает.
+# Наш конфиг ложится следом, а перезагрузка висит на handler, и тот
+# сработал бы только в конце play — уже после проверки.
+#
+# В контейнерах это не воспроизводится: policy-rc.d не даёт службам
+# стартовать при установке пакета, и первый запуск идёт с готовым конфигом.
+- name: Apply pending service reloads before verification
+  ansible.builtin.meta: flush_handlers
+
+# Handler срабатывает только когда меняется ФАЙЛ. Этого мало: прогон,
+# прерванный между рендером конфигурации и перезагрузкой службы, оставляет
+# haproxy с прежней конфигурацией в памяти, а повторный запуск playbook
+# ничего не исправляет — файл-то уже правильный.
+#
+# Поэтому сверяемся с фактическим состоянием службы, а не с файлом.
+# Отсутствие слушателя на frontend — достаточный признак: роль требует,
+# чтобы haproxy поднимал порт даже когда ни один backend не отвечает
+# (раздел 10), так что до kubeadm init он тоже обязан слушать.
+- name: Check whether the frontend port is already served
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ haproxy_frontend_port }}"
+    timeout: 5
+    state: started
+  register: haproxy_frontend_state
+  # ignore_errors, а НЕ failed_when: false. Второе выставляет в результате
+  # failed: false, и проверка `is failed` ниже не срабатывает никогда —
+  # задача перезапуска молча не выполняется.
+  ignore_errors: true
+  changed_when: false
   when: haproxy_manage_services | bool
+
+- name: Restart haproxy when it is not serving the current configuration
+  ansible.builtin.systemd:
+    name: haproxy
+    state: restarted
+  when:
+    - haproxy_manage_services | bool
+    - haproxy_frontend_state is failed
 
 - name: Verify load balancer
   ansible.builtin.import_tasks: verify.yml

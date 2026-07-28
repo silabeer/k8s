@@ -1,6 +1,11 @@
 ---
 # Пороги переопределяются в group_vars каждой группы (control_plane, workers,
 # load_balancers). Здесь — безопасный минимум.
+# Дублируется из роли haproxy_keepalived намеренно: defaults одной роли
+# в другой не видны, а роль обязана оставаться самодостаточной.
+# Значение из inventory перекрывает оба места и держит их в согласии.
+keepalived_enabled: true
+
 preflight_min_cpu: 2
 preflight_min_ram_mb: 2000
 preflight_min_disk_root_gb: 20

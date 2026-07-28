@@ -17,6 +17,7 @@
   register: keepalived_active
   changed_when: false
   failed_when: keepalived_active.stdout | trim != 'active'
+  when: keepalived_enabled | bool
 
 # До kubeadm init ни один backend не отвечает — HAProxy обязан стартовать
 # и в этом состоянии (раздел 10). Проверяем, что порт слушается.
@@ -27,22 +28,27 @@
     timeout: 30
     state: started
 
+# Проверки VIP имеют смысл только при keepalived: без него адрес endpoint —
+# это собственный адрес балансировщика, и поднимать его некому.
 # Выборы VRRP занимают несколько интервалов advert_int. Ждём на самом узле,
 # а не в assert: assert с run_once не перечитает факты других хостов между
 # попытками, потому что между ними ни одна задача не выполняется.
 - name: Wait for VRRP election to settle
   ansible.builtin.wait_for:
     timeout: "{{ keepalived_advert_int * 5 }}"
+  when: keepalived_enabled | bool
 
 - name: Read addresses on the VIP interface
   ansible.builtin.command:
     cmd: "ip -o -4 addr show dev {{ api_vip_interface }}"
   register: haproxy_vip_addrs
   changed_when: false
+  when: keepalived_enabled | bool
 
 - name: Determine whether this node holds the VIP
   ansible.builtin.set_fact:
     haproxy_holds_vip: "{{ api_vip in haproxy_vip_addrs.stdout }}"
+  when: keepalived_enabled | bool
 
 - name: Assert exactly one node holds the VIP
   vars:
@@ -64,3 +70,13 @@
     success_msg: "VIP {{ api_vip }} держит {{ vip_holders | first }}"
     quiet: true
   run_once: true
+  when: keepalived_enabled | bool
+
+- name: Report a load balancer without failover
+  ansible.builtin.debug:
+    msg: >-
+      keepalived выключен: endpoint {{ api_vip }} обслуживает один HAProxy и
+      является точкой отказа. Отказоустойчивость должна обеспечиваться
+      снаружи — см. ADR 0001.
+  run_once: true
+  when: not (keepalived_enabled | bool)

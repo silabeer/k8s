@@ -4,6 +4,17 @@
 # фактический failover покрывается VM-тестом уровня 2.
 haproxy_manage_services: true
 
+# Keepalived даёт отказоустойчивость endpoint через общий VIP на L2.
+# Выключается там, где L2-VIP невозможен: в облаке произвольный адрес не
+# поднять — фабрика о нём не знает, и keepalived, назначив VIP своему
+# интерфейсу, создаст видимость работы при недоступном адресе.
+#
+# При выключенном keepalived отказоустойчивости НЕТ: одиночный HAProxy
+# становится точкой отказа. Допустимо для стенда и для контура, где
+# отказоустойчивость обеспечивается снаружи (облачный балансировщик перед
+# парой HAProxy или локальный прокси на каждом узле — см. ADR 0001).
+keepalived_enabled: true
+
 haproxy_config_path: /etc/haproxy/haproxy.cfg
 keepalived_config_path: /etc/keepalived/keepalived.conf
 keepalived_check_script_path: /etc/keepalived/check_haproxy.sh

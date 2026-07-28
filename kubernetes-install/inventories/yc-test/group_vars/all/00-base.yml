@@ -32,21 +32,25 @@ pause_image_tag: "3.10.1"
 # -----------------------------------------------------------------------------
 # API endpoint
 #
-# Выделенной пары LB нет: в Yandex Cloud произвольный VIP на L2 не поднять,
-# для отказоустойчивого endpoint нужен сетевой балансировщик облака.
-# Поэтому endpoint указывает на первый control-plane узел.
+# Endpoint обслуживает выделенный узел с HAProxy — как в production
+# (раздел 3.2), а не адрес одного из control-plane узлов.
 #
-# Для production так делать НЕЛЬЗЯ (раздел 3.2): endpoint зашивается
-# в kubeconfig всех компонентов, и потеря этого узла лишает доступа
-# к API остальные два, хотя etcd-кворум сохранится.
+# Отличие от production ровно одно: keepalived выключен, потому что в
+# Yandex Cloud произвольный VIP на L2 не поднять — фабрика о таком адресе
+# не знает. Endpoint'ом служит собственный приватный адрес балансировщика,
+# и отказоустойчивости у него НЕТ: он точка отказа.
+#
+# В production здесь пара узлов с общим VIP; способы обеспечить
+# отказоустойчивость там, где L2-VIP невозможен, разобраны в
+# docs/adr/0001-kube-proxy-replacement.md, раздел 4.1.
 # -----------------------------------------------------------------------------
-api_vip: "10.129.0.11"   # приватный адрес k8s-cp-01
-api_vip_managed: false
+api_vip: "10.129.0.10"   # приватный адрес балансировщика, см. hosts.yml
+api_vip_managed: true
 api_vip_interface: "eth0"
 
-# Имя резолвится через /etc/hosts, который ведёт os_prepare: k8s-cp-01
+# Имя резолвится через /etc/hosts, который ведёт os_prepare: балансировщик
 # входит в cluster_hosts, поэтому отдельная запись не нужна.
-control_plane_endpoint_host: "k8s-cp-01"
+control_plane_endpoint_host: "k8s-lb-01"
 control_plane_endpoint_port: 6443
 control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endpoint_port }}"
 

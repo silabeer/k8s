@@ -74,14 +74,51 @@
     - cluster_environment == 'prod'
   run_once: true
 
-- name: Assert load balancer pair is defined when the VIP is managed here
+# Значение берётся из hostvars балансировщиков, а не текущего хоста:
+# задачи ниже выполняются с run_once, то есть на ПЕРВОМ хосте play, а он
+# может не входить в load_balancers — тогда keepalived_enabled разрешился бы
+# в значение по умолчанию, а не в заданное группе.
+#
+# Список с добавленным [true] на конце вместо `| first` по возможно пустой
+# последовательности: `first` от пустого списка роняет задачу на рендере
+# сообщения, пряча настоящую причину.
+- name: Determine whether load balancers manage a VIP through keepalived
+  ansible.builtin.set_fact:
+    preflight_keepalived_enabled: >-
+      {{ (groups['load_balancers'] | default([])
+          | map('extract', hostvars, 'keepalived_enabled')
+          | select('defined') | list + [true]) | first | bool }}
+  run_once: true
+
+# Пара нужна ровно тогда, когда отказоустойчивость обеспечивает keepalived.
+# Без него балансировщик один по построению: общего адреса нет, и второму
+# узлу трафик взять неоткуда. Отождествлять «управляем балансировщиком» с
+# «поднимаем VIP» нельзя — это разные вещи.
+- name: Assert load balancer pair is defined when a VIP is managed here
   ansible.builtin.assert:
     that:
       - groups['load_balancers'] | default([]) | length >= 2
     fail_msg: >-
-      api_vip_managed=true требует минимум двух LB-узлов для отказоустойчивости VIP.
+      api_vip_managed=true с keepalived требует минимум двух LB-узлов для
+      отказоустойчивости VIP. Для одиночного балансировщика задайте
+      keepalived_enabled=false — отказоустойчивость тогда обеспечивается
+      снаружи (docs/adr/0001-kube-proxy-replacement.md, раздел 4.1).
     quiet: true
-  when: api_vip_managed | bool
+  when:
+    - api_vip_managed | bool
+    - preflight_keepalived_enabled | bool
+  run_once: true
+
+- name: Warn about a load balancer without failover
+  ansible.builtin.debug:
+    msg: >-
+      ВНИМАНИЕ: балансировщик один и keepalived выключен. Endpoint
+      {{ api_vip }} — точка отказа: его потеря лишает доступа к API весь
+      кластер. Для prod требуется пара с общим VIP либо внешняя
+      отказоустойчивость.
+  when:
+    - api_vip_managed | bool
+    - not (preflight_keepalived_enabled | bool)
   run_once: true
 
 - name: Assert keepalived priorities are unique
@@ -95,5 +132,7 @@
       Приоритеты keepalived не уникальны: {{ priorities }}.
       Одинаковые приоритеты дают неопределённый выбор master.
     quiet: true
-  when: api_vip_managed | bool
+  when:
+    - api_vip_managed | bool
+    - preflight_keepalived_enabled | bool
   run_once: true

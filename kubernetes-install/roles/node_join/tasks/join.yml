@@ -68,6 +68,25 @@
   delay: 5
   until: node_join_endpoint_probe.status == 200
 
+# no_log здесь НЕ ставится, хотя файл содержит токен: модуль template не
+# печатает содержимое ни при успехе, ни при ошибке — в выводе только пути и
+# сообщение об ошибке рендера. Секрет защищён правами 0600 на файле и его
+# удалением после join, а не сокрытием диагностики.
+#
+# С no_log отказ рендера выглядел как «censored» без причины — на это
+# ушёл отдельный цикл диагностики.
+# Каталог создаёт kubeadm при init и пакет kubeadm при первой установке.
+# Ни того, ни другого на чистом worker-узле не происходит: init там не
+# выполняется, а пакет, уже установленный и удержанный, при повторном
+# прогоне каталог не восстанавливает. Роль обязана обеспечить его сама.
+- name: Ensure the Kubernetes configuration directory exists
+  ansible.builtin.file:
+    path: "{{ node_join_config_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Render the join configuration
   ansible.builtin.template:
     src: "kubeadm-join-{{ node_join_type }}.yaml.j2"
@@ -75,7 +94,6 @@
     owner: root
     group: root
     mode: "0600"
-  no_log: true
 
 - name: Run kubeadm join
   ansible.builtin.command:
