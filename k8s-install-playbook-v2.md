@@ -1149,7 +1149,7 @@ hubble:
 rollOutCiliumPods: true
 ```
 
-На первом этапе сохраняется стандартный kube-proxy. Его замена Cilium — отдельный ADR с отдельным тестированием.
+На первом этапе сохраняется стандартный kube-proxy. Его замена Cilium — отдельный ADR с отдельным тестированием: `docs/adr/0001-kube-proxy-replacement.md`. Замена не является самостоятельной целью — она возникает как условие Gateway API от Cilium, и предусловием к ней стоит отказоустойчивый API endpoint.
 
 Проверка после установки:
 
@@ -1379,7 +1379,7 @@ metadata:
 ## 21.2. Компоненты, требующие отдельного ADR
 
 * service mesh;
-* kube-proxy replacement;
+* kube-proxy replacement (ADR 0001);
 * multi-cluster networking / cluster mesh;
 * централизованный (hub) Argo CD для любых окружений;
 * автоматический admission mutation пользовательских Pod;

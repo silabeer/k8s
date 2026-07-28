@@ -1,0 +1,221 @@
+# ADR 0001. Замена kube-proxy на Cilium как условие Gateway API
+
+| | |
+| --- | --- |
+| Статус | Предложено |
+| Дата | 2026-07-28 |
+| Основание | Раздел 21.2 требует отдельного ADR для замены kube-proxy; раздел 11 (строка «На первом этапе сохраняется стандартный kube-proxy») |
+| Затрагивает | Раздел 21.1 пункт 8 — ingress controller или Gateway API |
+
+---
+
+## 1. Контекст
+
+Раздел 21.1 требует ingress controller **или** Gateway API. При выборе
+Gateway API возникает зависимость, которой нет в самом требовании:
+
+> **Prerequisites.** To utilize the Gateway API with Cilium, ensure that
+> Cilium is configured with kube-proxy replacement enabled by setting
+> `kubeProxyReplacement=true`.
+>
+> — Cilium 1.19.1, `Documentation/network/servicemesh/gateway-api/installation.rst`
+
+То есть «включить Gateway API» в нашей конфигурации означает **сменить
+datapath действующего кластера**, а это отдельное решение по разделу 21.2.
+
+Текущее состояние кластера `yc-test`:
+
+| Параметр | Значение |
+| --- | --- |
+| `kubeProxyReplacement` | `false` |
+| kube-proxy | DaemonSet, режим iptables |
+| Cilium | 1.19.6, `cilium-envoy` уже развёрнут |
+| Ядро | 6.8.0 (требованиям eBPF удовлетворяет с запасом) |
+| API endpoint | `api_vip` = адрес первого control-plane узла |
+
+---
+
+## 2. Что именно требует решения
+
+Не «нужен ли Gateway API» — а **какой ценой** он берётся. Три разных
+вопроса, которые легко перепутать:
+
+1. Нужен ли L7-вход в кластер (ingress или Gateway API) — да, по 21.1.
+2. Нужен ли именно Gateway API вместо ingress — вопрос стратегии.
+3. Нужна ли замена kube-proxy — следствие выбора реализации, а не
+   самостоятельная цель.
+
+---
+
+## 3. Рассмотренные варианты
+
+### Вариант A. Gateway API от Cilium + замена kube-proxy
+
+Один data plane: Cilium уже держит `cilium-envoy`, отдельный контроллер и
+отдельный набор подов не появляются.
+
+**Что придётся принять:**
+
+Переключение на работающем кластере **разрывает установленные соединения**.
+Документация Cilium об этом прямо:
+
+> Be aware that removing `kube-proxy` will break existing service
+> connections. It will also stop service related traffic until the Cilium
+> replacement has been installed. […] if the eBPF kube-proxy replacement is
+> added or removed on an already *running* cluster […] it must be expected
+> that existing connections will break since, for example, both NAT tables
+> are not aware of each other.
+>
+> — `Documentation/network/kubernetes/kubeproxy-free.rst`
+
+Радиус поражения ограничивается поузловой миграцией: Cilium поддерживает
+метку `io.cilium.migration/kube-proxy-replacement=true` вместе с
+`CiliumNodeConfig`, а kube-proxy патчится nodeAffinity, чтобы не занимать
+уже переведённые узлы. Узел переводится после `cordon` и `drain`.
+
+**Ограничение, снимающее вариант с рассмотрения при определённых
+требованиях к хранилищу.** Замена kube-proxy опирается на socket-LB, а он
+ломает NFS- и SMB-монтирования на ClusterIP:
+
+> NFS and SMB mounts to a Service cluster IP while using socket-LB can cause
+> issues. This problem has been observed with storage systems like Longhorn,
+> Portworx, and Robin, and may affect others implementing ReadWriteMany
+> volumes.
+
+Лечится конкретными коммитами ядра, забэкпорченными в стабильные ветки, —
+но это требование к ядру всех узлов, а не настройка.
+
+**Зависимость, которую легко упустить.** Без kube-proxy агент Cilium не
+может дойти до apiserver через ClusterIP и требует `k8sServiceHost` и
+`k8sServicePort` — то есть **прямой адрес API endpoint**. На стенде это
+адрес первого control-plane узла, и после переключения его потеря
+остановит работу с сервисами во всём кластере. В production адресом
+обязан быть VIP отказоустойчивой пары LB (раздел 3.2).
+
+### Вариант B. Независимая реализация Gateway API поверх kube-proxy
+
+Envoy Gateway или NGINX Gateway Fabric. Замены kube-proxy не требуют,
+datapath не трогают, откат — удаление Application.
+
+Плата: второй data plane рядом с уже работающим `cilium-envoy`.
+Диагностика трафика раздваивается: L3/L4 разбирается через Hubble, L7 —
+через логи и метрики второго контроллера.
+
+### Вариант C. Ingress controller вместо Gateway API
+
+Формально закрывает пункт 8 раздела 21.1 и не порождает ни одной из
+описанных зависимостей. Стратегически — тупиковая ветка: Ingress в
+апстриме заморожен, развитие идёт в Gateway API.
+
+### Вариант D. Отложить
+
+Кластер работоспособен без L7-входа. Требование 21.1 остаётся невыполненным.
+
+---
+
+## 4. Решение
+
+**Вариант A, но разделённый на два независимых изменения, и только после
+выполнения предусловия.**
+
+Предусловие: **API endpoint должен быть отказоустойчивым**. Пока
+`api_vip` — адрес одного узла, замена kube-proxy превращает этот узел в
+точку отказа всей сервисной маршрутизации. Это не «стендовое упрощение»,
+которое можно перенести в production позже: именно здесь оно меняет
+свойства кластера.
+
+Порядок:
+
+1. **Отдельно** — замена kube-proxy. Своя проверка, свой откат, никакого
+   Gateway API в этом изменении.
+2. **Отдельно** — включение Gateway API, когда датаплейн уже переведён и
+   отстоялся.
+
+Совмещать их нельзя: при отказе будет неясно, что именно сломалось.
+
+**Вариант A отклоняется в пользу B**, если платформе нужны
+ReadWriteMany-тома поверх NFS или SMB и нет возможности гарантировать
+наличие нужных патчей в ядрах всех узлов.
+
+---
+
+## 5. Последствия
+
+**Положительные**
+
+* Один data plane, одна точка диагностики: Hubble видит и L3/L4, и L7.
+* Отсутствие iptables-цепочек kube-proxy: на кластерах с большим числом
+  сервисов это заметно на времени сходимости.
+* `cilium-envoy` уже развёрнут — новых компонентов не добавляется.
+
+**Отрицательные**
+
+* Разрыв установленных соединений при переключении каждого узла.
+* Жёсткая зависимость от доступности API endpoint по прямому адресу.
+* Ограничение socket-LB на NFS/SMB поверх ClusterIP.
+* Откат — такое же разрушительное переключение, как и переход.
+
+**Нейтральные**
+
+* Диагностика меняется: `iptables-save` перестаёт что-либо объяснять,
+  вместо него `cilium-dbg service list`. Пример из дефекта 35 показывает,
+  что путать эти два источника дорого.
+
+---
+
+## 6. План перехода
+
+Выполняется на стенде целиком, до применения к любому другому контуру.
+
+1. Поднять отказоустойчивый API endpoint (`05-load-balancer.yml`) и
+   перевести `api_vip` на него. **Без этого шага дальше не идти.**
+2. Зафиксировать исходное состояние: `cilium-dbg service list`,
+   `kubectl get svc -A`, доступность API изнутри пода.
+3. Включить `kubeProxyReplacement=true` с `k8sServiceHost`/`k8sServicePort`
+   и поузловой миграцией: метка `io.cilium.migration/kube-proxy-replacement`,
+   `CiliumNodeConfig`, nodeAffinity на DaemonSet kube-proxy.
+4. Переводить узлы по одному: `cordon` → `drain` → метка → перезапуск
+   агента → проверка → `uncordon`. Начинать с worker-узла.
+5. После перевода всех узлов — удалить DaemonSet kube-proxy.
+6. Отдельным изменением — CRD Gateway API (standard channel; `TLSRoute`
+   из experimental, иначе Cilium молча отключит его поддержку) и
+   `gatewayAPI.enabled=true`.
+
+## 7. Как проверяется
+
+На каждом шаге, а не в конце:
+
+| Что | Чем |
+| --- | --- |
+| доступ к API **изнутри пода** | под с реальным TLS-клиентом, не с хоста |
+| сервисы разрешаются | `cilium-dbg service list` — у `kubernetes` столько backend, сколько control-plane узлов |
+| DNS | запрос к ClusterIP CoreDNS из пода |
+| NodePort и LoadBalancer | обращение снаружи |
+| рабочая нагрузка | podinfo отвечает во время и после перевода узла |
+| вывод узла | `remove-node` отрабатывает на переведённом узле |
+
+Проверка **с хоста не засчитывается**: `kubectl` с узла ходит на его адрес
+напрямую, минуя ClusterIP, и этот класс отказов не видит. Дефект 35
+обнаружился именно так.
+
+## 8. Откат
+
+Обратное переключение так же разрывает соединения. Порядок:
+
+1. Вернуть DaemonSet kube-proxy.
+2. Снять метки миграции с узлов, вернуть `kubeProxyReplacement=false`.
+3. Перезапустить агенты Cilium и kube-proxy, дождаться пересборки правил.
+4. Проверить доступ к API изнутри пода.
+
+Быстрого отката нет ни в одну сторону — это и есть главный довод за то,
+чтобы делать переход отдельным изменением на отстоявшемся кластере.
+
+## 9. Открытые вопросы
+
+* Нужны ли платформе ReadWriteMany-тома. Ответ «да, поверх NFS» меняет
+  решение на вариант B.
+* Какой CSI придёт на смену local-path-provisioner и не окажется ли он в
+  списке затронутых socket-LB.
+* Останется ли `05-load-balancer.yml` непроверенным: в облаке произвольный
+  VIP на L2 не поднять, а без отказоустойчивого endpoint предусловие
+  пункта 4 не выполняется.
