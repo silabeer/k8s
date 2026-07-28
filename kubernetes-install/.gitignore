@@ -15,3 +15,8 @@ roles/argocd_bootstrap/molecule/default/secrets.yml
 **/vault-pass*
 **/*.vault.yml.decrypted
 inventories/*/secrets.vault.yml
+
+# Локальный inventory с фактическими адресами стенда: репозиторий публичный,
+# связка «адреса + конфигурация кластера» наружу не идёт.
+inventories/*/hosts.local.yml
+inventories/*/group_vars/all/99-local.yml

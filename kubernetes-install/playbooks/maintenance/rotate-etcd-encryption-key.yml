@@ -34,8 +34,13 @@
   become: true
 
   vars:
-    etcd_encryption_key_name: key1
-    etcd_encryption_key_next_name: key2
+    # Имя нового ключа — всегда «другое» из пары. Жёсткое key1 -> key2 было
+    # верно только для первой ротации: на второй оно снова назначило бы
+    # действующему ключу имя key1, под которым в etcd ничего не записано.
+    # Действующее имя приходит из секрет-бэкенда (resolve_secrets), по
+    # умолчанию key1 — для кластера, который ещё не ротировали.
+    etcd_encryption_key_next_name: >-
+      {{ 'key2' if etcd_encryption_key_name == 'key1' else 'key1' }}
 
   pre_tasks:
     - name: Validate rotation phase
@@ -46,23 +51,35 @@
         fail_msg: >-
           Укажите фазу: -e rotation_phase=1|2|3|4.
           Фазы выполняются строго по порядку, с проверкой между ними.
-      run_once: true
+        quiet: true
 
     - name: Resolve secrets
       ansible.builtin.include_role:
         name: kubeadm_config
         tasks_from: resolve_secrets
 
+    # no_log здесь НЕ ставится: ни условия, ни сообщение ключа не содержат,
+    # а без вывода причина отказа не диагностируется (см. тот же довод в
+    # roles/kubeadm_config/tasks/resolve_secrets.yml).
     - name: Require the next encryption key for phases 1-3
       ansible.builtin.assert:
         that:
           - etcd_encryption_key_next is defined
-          - etcd_encryption_key_next | length > 0
+          - etcd_encryption_key_next | length == 44
+          - etcd_encryption_key_next is match('^[A-Za-z0-9+/]{43}=$')
+        # Путь подставляется по фактическому бэкенду. Безусловная ссылка на
+        # openbao_cluster_path роняла задачу на РЕНДЕРЕ сообщения — до
+        # проверки условий и независимо от их результата: при
+        # secret_backend=vault_file эта переменная не определена.
         fail_msg: >-
-          Новый ключ не найден в секрет-бэкенде по пути
-          {{ openbao_cluster_path }}/etcd-encryption-key-next
+          Новый ключ не найден по пути
+          {{ (openbao_cluster_path | default('') ~ '/') if secret_backend == 'openbao'
+             else (vault_file_path ~ ', поле ') }}{{ kubeadm_etcd_encryption_secret_key
+             | default('etcd-encryption-key') }}-next
+          либо имеет неверный формат: требуется 32 байта в base64.
+          Сгенерировать: head -c 32 /dev/urandom | base64
+        quiet: true
       when: rotation_phase | int < 4
-      no_log: true
 
   tasks:
     # -------------------------------------------------------------------------
@@ -124,8 +141,15 @@
         KUBECONFIG: "{{ kubeconfig_path }}"
       register: reencrypt
       changed_when: true
-      run_once: true
-      when: rotation_phase | int == 3
+      # run_once здесь НЕДОСТАТОЧНО: при serial он выполняется один раз на
+      # ПАРТИЮ, а не на play. При serial: 1 каждый узел — своя партия, и
+      # перешифровка всех Secrets запускалась по разу на каждом узле.
+      # Помимо лишней нагрузки это гонка: параллельные kubectl replace дают
+      # конфликт resourceVersion, а any_errors_fatal обрывает ротацию
+      # посередине. Явная привязка к первому узлу от serial не зависит.
+      when:
+        - rotation_phase | int == 3
+        - inventory_hostname == groups['control_plane'] | first
 
     - name: Report re-encryption result
       ansible.builtin.debug:
@@ -134,15 +158,24 @@
           Проверьте выборочно через etcdctl, что префикс сменился на
           k8s:enc:{{ etcd_encryption_provider }}:v1:{{ etcd_encryption_key_next_name }}:
           затем запускайте фазу 4.
-      run_once: true
-      when: rotation_phase | int == 3
+      when:
+        - rotation_phase | int == 3
+        - inventory_hostname == groups['control_plane'] | first
 
     - name: Remind to update the primary key in the secret backend
       ansible.builtin.debug:
         msg: >-
-          Ротация завершена. Обновите секрет-бэкенд: значение
-          etcd-encryption-key-next должно стать etcd-encryption-key,
-          а etcd-encryption-key-next — удалено. Без этого следующий прогон
-          40-control-plane-init.yml перерендерит конфигурацию со старым ключом.
-      run_once: true
-      when: rotation_phase | int == 4
+          Ротация завершена. Приведите секрет-бэкенд в соответствие, ОБА поля:
+          (1) {{ kubeadm_etcd_encryption_secret_key | default('etcd-encryption-key') }}
+          := значение поля -next, само поле -next удалить;
+          (2) {{ kubeadm_etcd_encryption_key_name_secret_key
+             | default('etcd-encryption-key-name') }} := {{ etcd_encryption_key_next_name }}.
+          Второе поле обязательно: apiserver ищет ключ расшифровки ПО ИМЕНИ из
+          префикса записи. Данные теперь подписаны именем
+          {{ etcd_encryption_key_next_name }}; если оставить имя прежним,
+          следующий прогон 40-control-plane-init.yml отдаст apiserver ключ под
+          другим именем, и все Secrets станут нечитаемы с ошибкой
+          "no matching key was found for the provided Secretbox transformer".
+      when:
+        - rotation_phase | int == 4
+        - inventory_hostname == groups['control_plane'] | first

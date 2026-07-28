@@ -6,14 +6,24 @@ kubeadm_encryption_config_path: /etc/kubernetes/encryption-config.yaml
 kubeadm_audit_policy_path: /etc/kubernetes/audit-policy.yaml
 kubeadm_admission_config_path: /etc/kubernetes/admission-config.yaml
 
-# Имена ключей шифрования. Список переопределяется playbook ротации
-# (playbooks/maintenance/rotate-etcd-encryption-key.yml), который управляет
-# порядком провайдеров вручную.
+# Имя ключа шифрования. Значение НЕ косметическое: apiserver подбирает ключ
+# расшифровки по имени из префикса записи в etcd (k8s:enc:secretbox:v1:<имя>).
+# Имя, разошедшееся с тем, под которым данные записаны, даёт отказ
+# «no matching key was found for the provided Secretbox transformer» —
+# все Secrets становятся нечитаемыми.
+#
+# Поэтому после ротации имя обязано следовать за ключом: playbook ротации
+# чередует key1 <-> key2, а фактическое имя хранится в секрет-бэкенде рядом
+# с самим ключом (поле ниже) и подхватывается отсюда лишь как значение
+# по умолчанию для кластера, который ещё не ротировали.
 etcd_encryption_key_name: key1
 kubeadm_encryption_keys: ~ # вычисляется в encryption_config.yml
 
 # Ключи секретов в бэкенде
 kubeadm_etcd_encryption_secret_key: etcd-encryption-key
+# Необязательное поле: имя действующего ключа. Появляется после первой
+# ротации; пока его нет, действует etcd_encryption_key_name.
+kubeadm_etcd_encryption_key_name_secret_key: etcd-encryption-key-name
 
 # etcd принимает версию TLS в формате TLS1.2/TLS1.3, apiserver — VersionTLS12.
 etcd_tls_min_version: TLS1.2

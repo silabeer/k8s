@@ -11,10 +11,15 @@ cluster_name: yc-test
 cluster_environment: test
 
 # -----------------------------------------------------------------------------
-# Версии. Сверены с фактически доступными в upstream 2026-07-27.
+# Базовая конфигурация: версии, которые ставятся с нуля.
+#
+# Cilium 1.19.6 заявляет поддержку Kubernetes 1.31-1.34, поэтому пара
+# 1.34.10 + 1.19.6 находится внутри матрицы совместимости. Переход на 1.35
+# требует Cilium 1.20 и выполняется playbook'ами upgrade/ вместе с
+# переключением gitops.revision на ветку cilium-1.20.
 # -----------------------------------------------------------------------------
-kubernetes_version: "1.35.7"
-kubernetes_apt_version: "1.35.7-1.1"
+kubernetes_version: "1.34.10"
+kubernetes_apt_version: "1.34.10-1.1"
 crictl_version: "1.34.0"
 containerd_version: "2.3.3"
 runc_version: "1.5.1"
@@ -89,7 +94,7 @@ helm_tarball_url: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.
 # -----------------------------------------------------------------------------
 cni:
   name: cilium
-  version: "1.20.0-rc.1"
+  version: "1.19.6"
   chart_source: repo
   chart_name: cilium
   chart_repo: "https://helm.cilium.io/"

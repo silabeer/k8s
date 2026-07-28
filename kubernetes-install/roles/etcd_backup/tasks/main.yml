@@ -1,4 +1,16 @@
 ---
+# Каталог создают bootstrap-роли, а они выполняются только на первом
+# control-plane узле. Без этой задачи роль падала на остальных узлах
+# и systemd timer там не настраивался вовсе.
+- name: Ensure the directory for the reference manifest exists
+  ansible.builtin.file:
+    path: "{{ etcd_backup_cronjob_reference_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: etcd_backup_render_cronjob_reference | bool
+
 - name: Render the reference CronJob manifest for the GitOps repository
   ansible.builtin.template:
     src: etcd-backup-cronjob.yaml.j2
