@@ -11,8 +11,8 @@
 # СОХРАНЯЮТСЯ — они могут понадобиться.
 #
 # Запуск:
-#   ansible-playbook -i inventories/yc-test/hosts.local.yml \
-#     inventories/yc-test/99-stand-teardown.yml -e teardown_confirm=<cluster_name>
+#   ansible-playbook -i inventories/k8s-east/hosts.local.yml \
+#     inventories/k8s-east/99-stand-teardown.yml -e teardown_confirm=<cluster_name>
 
 - name: Tear down the stand cluster
   hosts: kubernetes

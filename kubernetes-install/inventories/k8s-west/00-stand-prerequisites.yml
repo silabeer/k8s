@@ -10,8 +10,8 @@
 # (compute-vm-...), приватного DNS нет. Поэтому эмулируем оба условия здесь.
 # Playbook read-mostly и безопасен для повторного запуска.
 #
-#   ansible-playbook -i inventories/yc-test-b/hosts.yml \
-#     inventories/yc-test-b/00-stand-prerequisites.yml
+#   ansible-playbook -i inventories/k8s-west/hosts.yml \
+#     inventories/k8s-west/00-stand-prerequisites.yml
 
 # Балансировщик входит в подготовку наравне с узлами: его имя служит
 # адресом API endpoint и обязано резолвиться на всех машинах стенда.

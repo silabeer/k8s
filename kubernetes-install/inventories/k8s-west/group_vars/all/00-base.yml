@@ -7,7 +7,7 @@
 # обнаруживаться при отладке.
 # =============================================================================
 
-cluster_name: yc-test-b
+cluster_name: k8s-west
 cluster_environment: test
 
 # -----------------------------------------------------------------------------
@@ -50,7 +50,7 @@ api_vip_interface: "eth0"
 
 # Имя резолвится через /etc/hosts, который ведёт os_prepare: балансировщик
 # входит в cluster_hosts, поэтому отдельная запись не нужна.
-control_plane_endpoint_host: "k8s-b-lb-01"
+control_plane_endpoint_host: "k8s-w-lb-01"
 control_plane_endpoint_port: 6443
 control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endpoint_port }}"
 
@@ -61,8 +61,8 @@ control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endp
 # Cluster Mesh требует уникальных PodCIDR во всех кластерах, а изменить их
 # после установки нельзя — только переустановкой кластера.
 #
-#   yc-test:   pod 10.100.0.0/16, service 10.101.0.0/16
-#   yc-test-b: pod 10.110.0.0/16, service 10.111.0.0/16
+#   k8s-east:   pod 10.100.0.0/16, service 10.101.0.0/16
+#   k8s-west: pod 10.110.0.0/16, service 10.111.0.0/16
 # -----------------------------------------------------------------------------
 node_ip: "{{ ansible_host }}" # переопределяется в host_vars приватным адресом
 

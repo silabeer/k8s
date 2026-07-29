@@ -7,7 +7,7 @@
 # обнаруживаться при отладке.
 # =============================================================================
 
-cluster_name: yc-test
+cluster_name: k8s-east
 cluster_environment: test
 
 # -----------------------------------------------------------------------------
@@ -50,7 +50,7 @@ api_vip_interface: "eth0"
 
 # Имя резолвится через /etc/hosts, который ведёт os_prepare: балансировщик
 # входит в cluster_hosts, поэтому отдельная запись не нужна.
-control_plane_endpoint_host: "k8s-lb-01"
+control_plane_endpoint_host: "k8s-e-lb-01"
 control_plane_endpoint_port: 6443
 control_plane_endpoint: "{{ control_plane_endpoint_host }}:{{ control_plane_endpoint_port }}"
 
