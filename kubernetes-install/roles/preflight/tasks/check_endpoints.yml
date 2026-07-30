@@ -75,14 +75,44 @@
     - inventory_hostname in groups['kubernetes']
     - containerd_install_method | default('binary') == 'binary'
 
+# Сертификат кладётся во временный файл: модуль uri принимает только путь
+# НА УЗЛЕ, содержимое передать нельзя. Preflight ничего постоянного за
+# собой не оставляет, поэтому файл удаляется следующей задачей.
+- name: Stage the OpenBao CA certificate for the check
+  ansible.builtin.copy:
+    content: "{{ openbao_ca_cert }}"
+    dest: "{{ preflight_openbao_ca_tmp }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - secret_backend == 'openbao'
+    - openbao_ca_cert is not none
+    - openbao_ca_cert | default('') | length > 0
+    - inventory_hostname == groups['control_plane'] | first
+
 - name: Check secret backend availability
   ansible.builtin.uri:
     url: "{{ openbao_url }}/v1/sys/health"
     method: GET
     # 200 — unsealed active, 429 — standby, 473 — performance standby.
-    # Все три означают живой OpenBao.
+    # Все три означают живой OpenBao. Запечатанный отвечает 503, и это
+    # ровно тот случай, который проверка обязана поймать до установки.
     status_code: [200, 429, 473]
     timeout: "{{ preflight_connect_timeout }}"
+    # validate_certs НЕ отключается: проверка доступности секрет-бэкенда,
+    # выполненная без проверки сертификата, не стоит ничего.
+    ca_path: "{{ preflight_openbao_ca_effective | default(omit, true) }}"
   when:
     - secret_backend == 'openbao'
+    - inventory_hostname == groups['control_plane'] | first
+
+- name: Remove the staged CA certificate
+  ansible.builtin.file:
+    path: "{{ preflight_openbao_ca_tmp }}"
+    state: absent
+  when:
+    - secret_backend == 'openbao'
+    - openbao_ca_cert is not none
+    - openbao_ca_cert | default('') | length > 0
     - inventory_hostname == groups['control_plane'] | first

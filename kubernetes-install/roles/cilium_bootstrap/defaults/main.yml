@@ -27,6 +27,13 @@ cilium_status_delay: 15
 # Ключ GitOps deploy key в секрет-бэкенде
 cilium_deploy_key_secret_key: gitops-deploy-key
 
+# Общий центр сертификации Cluster Mesh (ADR 0002). Поля необязательны:
+# без них каждый кластер получает собственный CA, что годится для
+# одиночного кластера, но не для mesh.
+cilium_ca_secret_name: cilium-ca
+cilium_ca_cert_secret_key: cilium-ca-cert
+cilium_ca_key_secret_key: cilium-ca-key
+
 # Способ доступа к GitOps-репозиторию определяется по самому URL.
 #
 # ssh://... или git@... — нужен деплой-ключ (production-схема раздела 18.2).

@@ -11,6 +11,12 @@
     - name: Check out the GitOps repository
       ansible.builtin.import_tasks: gitops_checkout.yml
 
+    # Строго ДО применения чарта: задание выпуска сертификатов
+    # переиспользует существующий секрет cilium-ca, а если его нет —
+    # создаёт собственный CA, и кластеры перестают доверять друг другу.
+    - name: Seed the shared Cilium CA
+      ansible.builtin.import_tasks: seed_ca.yml
+
     - name: Render and apply the Cilium chart
       ansible.builtin.import_tasks: render_apply.yml
 

@@ -19,4 +19,3 @@ kubernetes==31.0.0
 netaddr==1.3.0
 
 # Требуется community.hashi_vault для OpenBao
-hvac==2.3.0

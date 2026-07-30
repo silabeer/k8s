@@ -12,7 +12,7 @@ help:
 
 deps:
 	ansible-galaxy collection install -r requirements.yml -p collections
-	pip install -r requirements-test.txt
+	pip install -r requirements-python.txt -r requirements-test.txt
 
 lint:
 	yamllint .

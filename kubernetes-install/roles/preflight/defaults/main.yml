@@ -6,6 +6,19 @@
 # Значение из inventory перекрывает оба места и держит их в согласии.
 keepalived_enabled: true
 
+# Доверие к сертификату OpenBao. Проверка доступности выполняется модулем
+# uri НА УЗЛЕ, поэтому переменные окружения lookup-плагина
+# (ANSIBLE_HASHI_VAULT_CA_CERT) на неё не действуют.
+#
+# В production внутренний CA обычно уже лежит в системном хранилище узла —
+# тогда оба параметра не нужны. Задавать их приходится там, где OpenBao
+# работает с самоподписанным или частным сертификатом.
+#
+#   openbao_ca_cert      — содержимое PEM (из inventory или секрет-бэкенда)
+#   openbao_ca_cert_path — путь к уже лежащему на узле файлу
+openbao_ca_cert: ~
+openbao_ca_cert_path: ~
+
 preflight_min_cpu: 2
 preflight_min_ram_mb: 2000
 preflight_min_disk_root_gb: 20

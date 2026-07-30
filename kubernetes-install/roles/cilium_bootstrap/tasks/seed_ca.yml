@@ -1,0 +1,116 @@
+---
+# Общий центр сертификации Cilium (ADR 0002).
+#
+# Задание выпуска сертификатов чарта стартует с --ca-reuse-secret и
+# --ca-secret-name=cilium-ca, то есть ПЕРЕИСПОЛЬЗУЕТ уже существующий
+# секрет. Если положить в оба кластера ОДИН И ТОТ ЖЕ CA, клиентские
+# сертификаты common-* окажутся взаимно доверенными, и обмен сертификатами
+# между кластерами не нужен — а он и невозможен в нашей модели: штатный
+# `cilium clustermesh connect` требует Helm-релиза, которого нет, потому
+# что проект применяет helm template + kubectl apply (раздел 4.3).
+#
+# Порядок обязателен: секрет создаётся ДО применения чарта. Иначе задание
+# сгенерирует собственный CA, и кластеры друг другу доверять не будут.
+#
+# Если CA в секрет-бэкенде не задан, шаг пропускается и каждый кластер
+# получает свой CA — это рабочая конфигурация для одиночного кластера.
+
+- name: Resolve the shared Cilium CA from OpenBao
+  ansible.builtin.set_fact:
+    cilium_ca_material: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+                openbao_mount_point ~ '/data/' ~ openbao_cluster_path,
+                url=openbao_url) }}
+  when: secret_backend == 'openbao'
+  no_log: true
+
+- name: Resolve the shared Cilium CA from the ansible-vault file
+  when: secret_backend == 'vault_file'
+  no_log: true
+  block:
+    - name: Load vault file
+      ansible.builtin.include_vars:
+        file: "{{ vault_file_path }}"
+        name: cilium_ca_material
+
+- name: Extract the CA certificate and key
+  ansible.builtin.set_fact:
+    cilium_ca_cert: "{{ cilium_ca_material[cilium_ca_cert_secret_key] | default('') }}"
+    cilium_ca_key: "{{ cilium_ca_material[cilium_ca_key_secret_key] | default('') }}"
+  no_log: true
+
+# Проверка формата — без no_log: ни условия, ни сообщение материала ключа
+# не содержат, а без вывода причина отказа не диагностируется.
+- name: Validate the CA material when it is present
+  ansible.builtin.assert:
+    that:
+      - cilium_ca_cert is search('BEGIN CERTIFICATE')
+      - cilium_ca_key is search('BEGIN [A-Z ]*PRIVATE KEY')
+    fail_msg: >-
+      В {{ secret_backend }} по пути
+      {{ openbao_cluster_path | default(vault_file_path) }} есть поля
+      {{ cilium_ca_cert_secret_key }} / {{ cilium_ca_key_secret_key }},
+      но это не сертификат и приватный ключ в формате PEM.
+    quiet: true
+  when: cilium_ca_cert | length > 0 or cilium_ca_key | length > 0
+
+- name: Report that no shared CA is configured
+  ansible.builtin.debug:
+    msg: >-
+      Общий CA в секрет-бэкенде не задан — чарт сгенерирует собственный.
+      Для Cluster Mesh это не годится: кластеры не будут доверять
+      сертификатам друг друга (ADR 0002).
+  when: cilium_ca_cert | length == 0
+
+- name: Handle the shared CA
+  when: cilium_ca_cert | length > 0
+  block:
+    - name: Look up the existing CA secret
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: v1
+        kind: Secret
+        namespace: "{{ cilium_namespace }}"
+        name: "{{ cilium_ca_secret_name }}"
+      register: cilium_ca_existing
+
+    # Подмена действующего CA обесценивает все выданные им сертификаты, в
+    # том числе те, что уже приняты соседним кластером. Молча этого делать
+    # нельзя: расхождение должен разбирать человек.
+    - name: Refuse to replace a different existing CA
+      ansible.builtin.assert:
+        that:
+          - cilium_ca_existing.resources[0].data['ca.crt'] == (cilium_ca_cert | b64encode)
+        fail_msg: >-
+          В кластере уже есть секрет {{ cilium_ca_secret_name }} с ДРУГИМ
+          центром сертификации. Замена обесценит все выданные сертификаты,
+          включая принятые соседними кластерами mesh. Разберитесь вручную:
+          либо приведите секрет-бэкенд в соответствие с кластером, либо
+          удалите секрет и переиздайте сертификаты во всех кластерах разом.
+        quiet: true
+      when: cilium_ca_existing.resources | length > 0
+
+    - name: Create the shared CA secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cilium_ca_secret_name }}"
+            namespace: "{{ cilium_namespace }}"
+          type: Opaque
+          data:
+            ca.crt: "{{ cilium_ca_cert | b64encode }}"
+            ca.key: "{{ cilium_ca_key | b64encode }}"
+      no_log: true
+      when: cilium_ca_existing.resources | length == 0
+
+    - name: Report the shared CA state
+      ansible.builtin.debug:
+        msg: >-
+          Общий CA {{ 'уже был в кластере' if cilium_ca_existing.resources | length > 0
+                      else 'создан из ' ~ secret_backend }}.
+          Сертификаты Cluster Mesh будут подписаны им, поэтому кластеры с тем
+          же CA доверяют друг другу без обмена сертификатами.

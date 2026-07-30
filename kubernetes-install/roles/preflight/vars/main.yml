@@ -1,0 +1,11 @@
+---
+
+# Путь временного файла с CA OpenBao и итоговый путь для модуля uri:
+# либо предоставленный оператором, либо временный, либо ничего — тогда
+# действует системное хранилище доверия узла.
+preflight_openbao_ca_tmp: /tmp/openbao-ca.crt
+preflight_openbao_ca_effective: >-
+  {{ openbao_ca_cert_path if openbao_ca_cert_path is not none
+     else (preflight_openbao_ca_tmp
+           if (openbao_ca_cert is not none and openbao_ca_cert | default('') | length > 0)
+           else '') }}
