@@ -68,7 +68,11 @@ node_ip: "{{ ansible_host }}" # переопределяется в host_vars п
 
 pod_network_cidr: "10.110.0.0/16"
 service_network_cidr: "10.111.0.0/16"
-cluster_dns: "10.101.0.10"
+# Адрес DNS выводится из service CIDR, а не задаётся отдельно: kubeadm
+# отдаёт CoreDNS десятый адрес диапазона, и два независимых значения
+# неизбежно расходятся. Именно это и произошло при заведении второго
+# кластера — preflight поймал, но чинить пришлось руками.
+cluster_dns: "{{ service_network_cidr | ansible.utils.ipaddr(10) | ansible.utils.ipaddr('address') }}"
 cluster_domain: "cluster.local"
 node_mtu: 1500
 
