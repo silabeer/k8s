@@ -18,7 +18,7 @@
 - name: Build snapshot names
   ansible.builtin.set_fact:
     etcd_backup_pod: "etcd-{{ inventory_hostname }}"
-    etcd_backup_filename: "etcd-snapshot-{{ ansible_date_time.iso8601_basic_short }}.db"
+    etcd_backup_filename: "etcd-snapshot-{{ now(utc=true, fmt='%Y%m%dT%H%M%S') }}.db"
 
 - name: Take an etcd snapshot
   ansible.builtin.command:

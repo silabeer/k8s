@@ -36,7 +36,7 @@
     - name: Back up existing PKI
       ansible.builtin.copy:
         src: /etc/kubernetes/pki/
-        dest: "/etc/kubernetes/pki.backup-{{ ansible_date_time.iso8601_basic_short }}/"
+        dest: "/etc/kubernetes/pki.backup-{{ now(utc=true, fmt='%Y%m%dT%H%M%S') }}/"
         remote_src: true
         mode: preserve
       register: pki_backup
@@ -44,7 +44,7 @@
     - name: Back up kubeconfig files
       ansible.builtin.copy:
         src: "/etc/kubernetes/{{ item }}"
-        dest: "/etc/kubernetes/{{ item }}.backup-{{ ansible_date_time.iso8601_basic_short }}"
+        dest: "/etc/kubernetes/{{ item }}.backup-{{ now(utc=true, fmt='%Y%m%dT%H%M%S') }}"
         remote_src: true
         mode: "0600"
       loop:

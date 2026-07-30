@@ -232,7 +232,7 @@
           ansible.builtin.command:
             cmd: >-
               mv {{ restore_data_dir }}/member
-              {{ restore_data_dir }}/member.pre-restore-{{ ansible_date_time.iso8601_basic_short }}
+              {{ restore_data_dir }}/member.pre-restore-{{ now(utc=true, fmt='%Y%m%dT%H%M%S') }}
             removes: "{{ restore_data_dir }}/member"
           when: restore_keep_previous_data | bool
 
@@ -332,9 +332,9 @@
         # Running, а kubectl с хоста работает: он ходит на адрес узла напрямую,
         # минуя ClusterIP. Кластер выглядит здоровым и им нельзя управлять.
         # ---------------------------------------------------------------------
-        - name: Restart node agents whose state is derived from watches
-          ansible.builtin.include_tasks: tasks/restart-node-agents.yml
-          when: inventory_hostname == groups['control_plane'] | first
+        # Перезапуск агентов вынесен в отдельные play ниже: kubelet нужно
+        # перезапустить на ВСЕХ узлах, а не только на control-plane, и
+        # строго до перезапуска DaemonSet.
 
       rescue:
         - name: Report the failure
@@ -394,3 +394,67 @@
           {{ restore_data_dir }}/member.pre-restore-* — удалите, когда
           убедитесь в работоспособности.
       when: inventory_hostname == groups['control_plane'] | first
+
+# -----------------------------------------------------------------------------
+# kubelet перезапускается на ВСЕХ узлах и строго ДО агентов.
+#
+# После отката kubelet остаётся с состоянием, выведенным из прежних
+# watch-подписок, и перестаёт обрабатывать удаление подов: под получает
+# deletionTimestamp и висит в Terminating бесконечно, событий при этом нет
+# вовсе. Наблюдалось на живом кластере — раскатка DaemonSet упиралась в
+# «0 out of 3 new pods have been updated» и не двигалась.
+#
+# Отсюда и порядок: пока kubelet не перезапущен, перезапускать DaemonSet
+# бессмысленно — их поды не будут ни удалены, ни созданы.
+# -----------------------------------------------------------------------------
+- name: Restart kubelet on every node after the rollback
+  hosts: kubernetes
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+
+  tasks:
+    - name: Restart kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+      when: restore_confirm is defined
+
+    # Через k8s_info, а не kubectl с jsonpath: модуль command разбирает
+    # строку через shlex и съедает кавычки внутри выражения, отчего
+    # `@.type=='Ready'` приезжает как `@.type==Ready` и jsonpath падает на
+    # «unrecognized identifier Ready».
+    - name: Wait for the node to report Ready again
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Node
+        name: "{{ inventory_hostname }}"
+      delegate_to: "{{ groups['control_plane'] | first }}"
+      register: restore_node_state
+      retries: 30
+      delay: 10
+      until:
+        - restore_node_state.resources | default([]) | length > 0
+        - restore_node_state.resources[0].status.conditions
+          | selectattr('type', 'equalto', 'Ready')
+          | selectattr('status', 'equalto', 'True') | list | length > 0
+      when: restore_confirm is defined
+
+- name: Restart node agents after the rollback
+  hosts: "{{ groups['control_plane'] | first }}"
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+
+  vars:
+    restore_node_agents:
+      - namespace: kube-system
+        name: kube-proxy
+      - namespace: kube-system
+        name: cilium
+    restore_agent_rollout_timeout: 300s
+
+  tasks:
+    - name: Restart node agents whose state is derived from watches
+      ansible.builtin.include_tasks: tasks/restart-node-agents.yml
+      when: restore_confirm is defined
