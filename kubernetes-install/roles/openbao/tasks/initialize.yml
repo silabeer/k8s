@@ -1,0 +1,89 @@
+---
+- name: Read the current state
+  ansible.builtin.command:
+    cmd: bao status -format=json
+  environment: "{{ openbao_cli_env }}"
+  register: openbao_status
+  changed_when: false
+  # bao status возвращает 2, когда хранилище запечатано, и 1 — когда не
+  # инициализировано. Оба состояния нормальны на этом шаге.
+  failed_when: openbao_status.rc not in [0, 1, 2]
+
+- name: Parse the current state
+  ansible.builtin.set_fact:
+    openbao_state: "{{ openbao_status.stdout | from_json }}"
+
+- name: Report an already initialized store
+  ansible.builtin.debug:
+    msg: >-
+      Хранилище уже инициализировано. Ключи распечатывания и корневой токен
+      выдаются ОДИН РАЗ и повторно получены быть не могут — роль их не
+      трогает.
+  when: openbao_state.initialized | bool
+
+- name: Initialize the store
+  when:
+    - openbao_initialize | bool
+    - not (openbao_state.initialized | bool)
+  block:
+    - name: Run initialization
+      ansible.builtin.command:
+        cmd: >-
+          bao operator init
+          -key-shares={{ openbao_key_shares }}
+          -key-threshold={{ openbao_key_threshold }}
+          -format=json
+      environment: "{{ openbao_cli_env }}"
+      register: openbao_init
+      changed_when: true
+      no_log: true
+
+    # Файл пишется на УПРАВЛЯЮЩУЮ машину, а не на сервер: держать ключи
+    # распечатывания на том же узле, что и хранилище, равнозначно
+    # незапечатанному хранилищу.
+    - name: Save the initialization output on the controller
+      ansible.builtin.copy:
+        content: "{{ openbao_init.stdout }}"
+        dest: "{{ openbao_init_output_path | expanduser }}"
+        mode: "0600"
+      delegate_to: localhost
+      vars:
+        ansible_become: false
+      no_log: true
+
+    - name: Warn about the initialization output
+      ansible.builtin.debug:
+        msg: >-
+          Хранилище инициализировано. Ключи распечатывания и КОРНЕВОЙ ТОКЕН
+          сохранены на управляющей машине в
+          {{ openbao_init_output_path | expanduser }} с правами 0600.
+          Перенесите их в постоянное хранилище и удалите файл. Повторно они
+          не выдаются: их потеря — потеря всех секретов без восстановления.
+          В production корневой токен после настройки отзывается, а работа
+          идёт через AppRole с ограниченной политикой.
+
+- name: Unseal the store
+  when:
+    - openbao_auto_unseal | bool
+    - openbao_state.sealed | default(true) | bool
+  block:
+    - name: Read the saved initialization output
+      ansible.builtin.slurp:
+        src: "{{ openbao_init_output_path | expanduser }}"
+      delegate_to: localhost
+      vars:
+        ansible_become: false
+      register: openbao_init_saved
+      no_log: true
+
+    - name: Apply the unseal keys
+      ansible.builtin.command:
+        cmd: "bao operator unseal {{ item }}"
+      environment: "{{ openbao_cli_env }}"
+      loop: >-
+        {{ (openbao_init_saved.content | b64decode | from_json).unseal_keys_b64[:openbao_key_threshold | int] }}
+      loop_control:
+        label: "ключ {{ ansible_loop.index }} из {{ openbao_key_threshold }}"
+        extended: true
+      changed_when: true
+      no_log: true

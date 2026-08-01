@@ -1,0 +1,46 @@
+---
+- name: Install OpenBao
+  ansible.builtin.import_tasks: install.yml
+
+- name: Prepare TLS material
+  ansible.builtin.import_tasks: tls.yml
+
+- name: Render the configuration
+  ansible.builtin.template:
+    src: openbao.hcl.j2
+    dest: "{{ openbao_config_path }}"
+    owner: openbao
+    group: openbao
+    mode: "0640"
+  notify: Restart openbao
+
+- name: Enable and start the service
+  ansible.builtin.systemd:
+    name: openbao
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: openbao_manage_service | bool
+
+# Обязательно ДО работы с хранилищем: изменения конфигурации и сертификата
+# применяются обработчиком, а тот сработал бы только в конце play — и
+# инициализация пошла бы к серверу со старыми настройками.
+- name: Apply pending restarts before touching the store
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the API to answer
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ openbao_port }}"
+    timeout: 60
+  when: openbao_manage_service | bool
+
+- name: Initialize and unseal
+  ansible.builtin.import_tasks: initialize.yml
+  when: openbao_manage_service | bool
+
+- name: Configure the secrets engine
+  ansible.builtin.import_tasks: secrets_engine.yml
+  when:
+    - openbao_manage_service | bool
+    - not (openbao_state.sealed | default(true) | bool) or openbao_auto_unseal | bool

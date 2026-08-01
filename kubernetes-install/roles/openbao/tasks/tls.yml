@@ -1,0 +1,74 @@
+---
+# Сертификат, сгенерированный пакетом, НЕ содержит адресов, по которым к
+# серверу обращаются, и подключение падает на проверке имени. Перевыпуск с
+# явными SAN обязателен.
+- name: Install the operator-provided certificate
+  when:
+    - openbao_tls_cert_content is not none
+    - openbao_tls_key_content is not none
+  block:
+    - name: Write the certificate
+      ansible.builtin.copy:
+        content: "{{ openbao_tls_cert_content }}"
+        dest: "{{ openbao_tls_dir }}/tls.crt"
+        owner: openbao
+        group: openbao
+        mode: "0644"
+      notify: Restart openbao
+
+    - name: Write the private key
+      ansible.builtin.copy:
+        content: "{{ openbao_tls_key_content }}"
+        dest: "{{ openbao_tls_dir }}/tls.key"
+        owner: openbao
+        group: openbao
+        mode: "0640"
+      no_log: true
+      notify: Restart openbao
+
+- name: Generate a self-signed certificate
+  when:
+    - openbao_tls_generate | bool
+    - openbao_tls_cert_content is none
+  block:
+    - name: Check the existing certificate
+      ansible.builtin.command:
+        cmd: "openssl x509 -in {{ openbao_tls_dir }}/tls.crt -noout -ext subjectAltName"
+      register: openbao_existing_san
+      changed_when: false
+      failed_when: false
+
+    - name: Generate the certificate with the required SANs
+      ansible.builtin.command:
+        cmd: >-
+          openssl req -x509 -newkey rsa:2048 -nodes -days {{ openbao_tls_days }}
+          -keyout {{ openbao_tls_dir }}/tls.key -out {{ openbao_tls_dir }}/tls.crt
+          -subj /CN={{ openbao_tls_common_name }}
+          -addext subjectAltName={{ (openbao_tls_san_dns | map('regex_replace', '^', 'DNS:') | list
+                                     + openbao_tls_san_ip | map('regex_replace', '^', 'IP:') | list)
+                                    | join(',') }}
+          -addext keyUsage=digitalSignature,keyEncipherment
+          -addext extendedKeyUsage=serverAuth
+      # Перевыпуск только если в текущем сертификате нет нужных адресов:
+      # иначе каждый прогон менял бы сертификат и перезапускал службу.
+      when: >-
+        openbao_existing_san.rc != 0 or
+        (openbao_tls_san_ip | reject('equalto', '127.0.0.1') | list
+         | reject('in', openbao_existing_san.stdout) | list | length > 0)
+      notify: Restart openbao
+
+- name: Set permissions on the TLS material
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: openbao
+    group: openbao
+    mode: "{{ item.mode }}"
+  loop:
+    # Каталог и сертификат должны читаться не только службой: клиенту нужен
+    # тот же файл как доверенный корень. При правах 0700 на каталоге
+    # `bao status` падает с «permission denied» ещё до обращения к серверу.
+    - {path: "{{ openbao_tls_dir }}", mode: "0755"}
+    - {path: "{{ openbao_tls_dir }}/tls.crt", mode: "0644"}
+    - {path: "{{ openbao_tls_dir }}/tls.key", mode: "0640"}
+  loop_control:
+    label: "{{ item.path }}"

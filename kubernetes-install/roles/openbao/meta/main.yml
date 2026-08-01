@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: openbao
+  description: OpenBao — секрет-бэкенд кластеров (раздел 22)
+  license: proprietary
+  min_ansible_version: "2.15"
+dependencies: []

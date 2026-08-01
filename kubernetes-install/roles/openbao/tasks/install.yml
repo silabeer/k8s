@@ -1,0 +1,34 @@
+---
+- name: Check the installed version
+  ansible.builtin.command:
+    cmd: bao version
+  register: openbao_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install the package
+  when: openbao_version not in (openbao_installed.stdout | default(''))
+  block:
+    # Имя артефакта — openbao_<версия>_linux_amd64.deb, а НЕ bao_...
+    # На этом уже терялось время: dpkg молча не ставит несуществующий файл.
+    - name: Download the package
+      ansible.builtin.get_url:
+        url: "{{ openbao_package_url }}"
+        dest: "/tmp/openbao-{{ openbao_version }}.deb"
+        checksum: "{{ openbao_package_checksum | default(omit, true) }}"
+        mode: "0644"
+
+    - name: Install the package
+      ansible.builtin.apt:
+        deb: "/tmp/openbao-{{ openbao_version }}.deb"
+
+    - name: Remove the downloaded package
+      ansible.builtin.file:
+        path: "/tmp/openbao-{{ openbao_version }}.deb"
+        state: absent
+
+- name: Verify the binary is available
+  ansible.builtin.command:
+    cmd: bao version
+  register: openbao_version_check
+  changed_when: false

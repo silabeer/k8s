@@ -1,0 +1,75 @@
+---
+# OpenBao — секрет-бэкенд проекта (раздел 22 документа).
+#
+# СТАТУС: сама роль на живом сервере не выполнялась, но процедура, которую
+# она кодирует, выполнена вручную и проверена — включая lookup из ролей и
+# проверку доступности из preflight. Это отличает её от roles/spire_server,
+# где не проверено и то, и другое.
+
+openbao_version: "2.6.1"
+openbao_package_url: >-
+  https://github.com/openbao/openbao/releases/download/v{{ openbao_version }}/openbao_{{ openbao_version }}_linux_amd64.deb
+openbao_package_checksum: ~ # sha256:... — закрепить перед production
+
+openbao_config_path: /etc/openbao/openbao.hcl
+openbao_data_dir: /opt/openbao/data
+openbao_tls_dir: /opt/openbao/tls
+
+openbao_bind_address: "0.0.0.0"
+openbao_port: 8200
+openbao_ui_enabled: true
+
+# Адрес, по которому сервер доступен клиентам. Обязателен: без api_addr
+# OpenBao ругается при инициализации.
+openbao_api_addr: "https://{{ ansible_default_ipv4.address }}:{{ openbao_port }}"
+
+# -----------------------------------------------------------------------------
+# TLS
+#
+# Пакет генерирует самоподписанный сертификат сам, но БЕЗ адресов, по
+# которым к серверу реально обращаются, — с ним подключение падает на
+# проверке имени. Поэтому сертификат перевыпускается с явными SAN.
+#
+# Собственный сертификат оператора задаётся через openbao_tls_cert_content
+# и openbao_tls_key_content; тогда генерация пропускается.
+# -----------------------------------------------------------------------------
+openbao_tls_generate: true
+openbao_tls_cert_content: ~
+openbao_tls_key_content: ~
+openbao_tls_common_name: "openbao"
+# Сюда обязаны попасть ВСЕ адреса обращения: публичный — для управляющей
+# машины, приватный — для узлов кластеров.
+openbao_tls_san_dns:
+  - "{{ inventory_hostname }}"
+  - localhost
+openbao_tls_san_ip:
+  - "{{ ansible_default_ipv4.address }}"
+  - 127.0.0.1
+openbao_tls_days: 825
+
+# -----------------------------------------------------------------------------
+# Инициализация
+#
+# ВНИМАНИЕ. Инициализация выдаёт ключи распечатывания и корневой токен —
+# единственный раз за всю жизнь хранилища. Потеря ключей означает потерю
+# всех секретов без возможности восстановления.
+#
+# Роль сохраняет их в файл НА УПРАВЛЯЮЩЕЙ МАШИНЕ с правами 0600 и НЕ кладёт
+# ни в лог, ни в вывод. Оператор обязан перенести их в место постоянного
+# хранения и удалить файл.
+#
+# В production корневой токен после начальной настройки отзывается, а для
+# работы заводится AppRole с ограниченной политикой.
+# -----------------------------------------------------------------------------
+openbao_initialize: true
+openbao_key_shares: 3
+openbao_key_threshold: 2
+openbao_init_output_path: "~/.openbao-init-{{ inventory_hostname }}.json"
+
+# Распечатывание ключами из файла инициализации. Удобство СТЕНДА: держать
+# ключи рядом с сервером в production бессмысленно — это равнозначно
+# незапечатанному хранилищу. Там распечатывание делают люди либо KMS облака.
+openbao_auto_unseal: false
+
+openbao_kv_mount: kv
+openbao_manage_service: true

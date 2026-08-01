@@ -1,0 +1,7 @@
+---
+# Окружение CLI. BAO_CACERT указывает на тот же файл, что слушает сервер:
+# сертификат самоподписанный, в системном хранилище доверия его нет.
+openbao_cli_env:
+  BAO_ADDR: "https://127.0.0.1:{{ openbao_port }}"
+  BAO_CACERT: "{{ openbao_tls_dir }}/tls.crt"
+  BAO_TOKEN: "{{ openbao_root_token | default('', true) }}"

@@ -1,0 +1,18 @@
+---
+# Развёртывание секрет-бэкенда (раздел 22 документа).
+#
+# Запускается ОТДЕЛЬНО от установки кластеров и ДО неё: preflight проверяет
+# доступность бэкенда, а роли читают из него ключ шифрования etcd.
+#
+#   ansible-playbook -i inventories/<контур>/hosts.yml playbooks/91-openbao.yml
+#
+# Роль на живом сервере не выполнялась — см. roles/openbao/README.md.
+
+- name: Deploy the secret backend
+  hosts: secret_backend
+  gather_facts: true
+  become: true
+  any_errors_fatal: true
+
+  roles:
+    - role: openbao

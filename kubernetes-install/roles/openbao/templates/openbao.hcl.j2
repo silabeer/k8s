@@ -1,0 +1,19 @@
+{# {{ ansible_managed }} #}
+ui = {{ openbao_ui_enabled | bool | lower }}
+
+storage "file" {
+  path = "{{ openbao_data_dir }}"
+}
+
+listener "tcp" {
+  address       = "{{ openbao_bind_address }}:{{ openbao_port }}"
+  tls_cert_file = "{{ openbao_tls_dir }}/tls.crt"
+  tls_key_file  = "{{ openbao_tls_dir }}/tls.key"
+}
+
+{#
+  api_addr обязателен: без него инициализация завершается ошибкой.
+  Значение должно совпадать с тем адресом, по которому к серверу
+  обращаются клиенты, иначе перенаправления уводят не туда.
+-#}
+api_addr = "{{ openbao_api_addr }}"
