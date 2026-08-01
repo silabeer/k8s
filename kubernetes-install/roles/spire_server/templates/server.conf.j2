@@ -1,0 +1,65 @@
+{# {{ ansible_managed }} #}
+{#
+  Конфигурация SPIRE server. Формат HCL.
+
+  Заметки, важные при правках:
+    * trust_domain входит в каждый SPIFFE ID и в сертификаты — смена
+      равнозначна переизданию всех идентичностей;
+    * ca_ttl должен быть заметно больше default_x509_svid_ttl, иначе
+      сертификаты рабочих нагрузок начнут переживать собственный CA;
+    * k8s_psat проверяет токен обращением к apiserver того кластера,
+      поэтому серверу нужен kubeconfig КАЖДОГО кластера.
+-#}
+server {
+    bind_address = "{{ spire_bind_address }}"
+    bind_port    = "{{ spire_bind_port }}"
+    trust_domain = "{{ spire_trust_domain }}"
+    data_dir     = "{{ spire_data_dir }}"
+    log_level    = "INFO"
+    log_file     = "{{ spire_log_dir }}/server.log"
+
+    ca_ttl                = "{{ spire_ca_ttl }}"
+    default_x509_svid_ttl = "{{ spire_default_x509_svid_ttl }}"
+    default_jwt_svid_ttl  = "{{ spire_default_jwt_svid_ttl }}"
+
+    ca_subject {
+        country      = ["{{ spire_ca_subject.country }}"]
+        organization = ["{{ spire_ca_subject.organization }}"]
+        common_name  = "{{ spire_ca_subject.common_name }}"
+    }
+}
+
+plugins {
+    DataStore "{{ spire_datastore_plugin }}" {
+        plugin_data {
+            connection_string = "{{ spire_datastore_connection_string }}"
+        }
+    }
+
+{% for cluster in spire_clusters %}
+    NodeAttestor "k8s_psat" {
+        plugin_data {
+            clusters = {
+                "{{ cluster.name }}" = {
+                    service_account_allow_list = {{ cluster.service_account_allow_list | to_json }}
+                    kube_config_file           = "{{ spire_config_dir }}/kubeconfig/{{ cluster.name }}.kubeconfig"
+                }
+            }
+        }
+    }
+{% endfor %}
+
+    KeyManager "disk" {
+        plugin_data {
+            keys_path = "{{ spire_data_dir }}/keys.json"
+        }
+    }
+}
+
+health_checks {
+    listener_enabled = true
+    bind_address     = "127.0.0.1"
+    bind_port        = "8080"
+    live_path        = "/live"
+    ready_path       = "/ready"
+}

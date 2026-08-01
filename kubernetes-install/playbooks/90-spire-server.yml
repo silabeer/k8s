@@ -1,0 +1,18 @@
+---
+# Развёртывание сервера SPIRE (план, раздел 6).
+#
+# Запускается ОТДЕЛЬНО от установки кластеров: сервер живёт вне кластеров и
+# обслуживает их все, как и секрет-бэкенд.
+#
+#   ansible-playbook -i inventories/<контур>/hosts.yml playbooks/90-spire-server.yml
+#
+# Роль НЕ проверена на живом сервере — см. roles/spire_server/README.md.
+
+- name: Deploy the SPIRE server
+  hosts: spire_servers
+  gather_facts: true
+  become: true
+  any_errors_fatal: true
+
+  roles:
+    - role: spire_server

@@ -1,0 +1,61 @@
+---
+# SPIRE server — центр выдачи идентичностей рабочим нагрузкам (SPIFFE).
+#
+# Роль ставит и настраивает СЕРВЕР. Агенты в кластерах и записи регистрации
+# для Cilium ей не покрываются — см. README роли.
+#
+# СТАТУС: роль написана, но на живом сервере НЕ ПРОВЕРЯЛАСЬ. Всё, что
+# делалось в этом проекте без прогона на настоящих машинах, содержало
+# ошибки. Считать рабочей только после первого успешного прогона.
+
+spire_version: "1.15.2"
+spire_download_url: >-
+  https://github.com/spiffe/spire/releases/download/v{{ spire_version }}/spire-{{ spire_version }}-linux-amd64-musl.tar.gz
+spire_download_checksum: ~ # sha256:... — закрепить перед production
+
+spire_user: spire
+spire_group: spire
+spire_install_dir: /opt/spire
+spire_config_dir: /etc/spire
+spire_data_dir: /var/lib/spire
+spire_log_dir: /var/log/spire
+
+# Домен доверия. Меняется ТОЛЬКО вместе с переизданием всех идентичностей:
+# он входит в каждый SPIFFE ID и в сертификаты. Значение по умолчанию из
+# чарта Cilium — spiffe.cilium; для собственного сервера имя стоит выбрать
+# осмысленное и одинаковое во всех кластерах, иначе межкластерная
+# аутентификация невозможна (ADR 0002).
+spire_trust_domain: "spiffe.cilium"
+
+spire_bind_address: "0.0.0.0"
+spire_bind_port: 8081
+
+# Срок жизни выдаваемых SVID. Короткий срок — смысл SPIFFE: утёкший
+# сертификат быстро перестаёт что-либо значить. Слишком короткий нагружает
+# сервер и агентов.
+spire_default_x509_svid_ttl: "1h"
+spire_default_jwt_svid_ttl: "5m"
+spire_ca_ttl: "24h"
+
+spire_ca_subject:
+  country: "RU"
+  organization: "Platform"
+  common_name: "SPIRE CA"
+
+# Хранилище. sqlite3 достаточно для одного сервера; для отказоустойчивой
+# пары нужен внешний PostgreSQL и общий datastore — тогда меняется и схема
+# развёртывания, и эта роль (раздел «Ограничения» в README).
+spire_datastore_plugin: sqlite3
+spire_datastore_connection_string: "{{ spire_data_dir }}/datastore.sqlite3"
+
+# Кластеры, узлам которых сервер доверяет. Для каждого нужен kubeconfig НА
+# СЕРВЕРЕ: аттестатор k8s_psat проверяет projected-токен через apiserver
+# того кластера, то есть сервер обращается к кластеру, а не наоборот.
+#
+#   - name: k8s-east
+#     kubeconfig_src: files/k8s-east.kubeconfig   # путь на управляющей машине
+#     service_account_allow_list:
+#       - cilium-spire:spire-agent
+spire_clusters: []
+
+spire_manage_service: true

@@ -1,0 +1,163 @@
+---
+- name: Assert the trust domain and clusters are configured
+  ansible.builtin.assert:
+    that:
+      - spire_trust_domain | length > 0
+      - spire_clusters | length > 0
+    fail_msg: >-
+      Задайте spire_trust_domain и хотя бы один кластер в spire_clusters.
+      Без кластеров сервер поднимется, но ни один узел не пройдёт
+      аттестацию — аттестатор k8s_psat настраивается на конкретные кластеры.
+    quiet: true
+
+- name: Assert every cluster has a kubeconfig and an allow list
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.kubeconfig_src is defined
+      - item.service_account_allow_list | default([]) | length > 0
+    fail_msg: >-
+      Кластер {{ item.name | default('без имени') }}: нужны name,
+      kubeconfig_src и непустой service_account_allow_list. Пустой список
+      означал бы, что серверу подойдёт любой service account кластера.
+    quiet: true
+  loop: "{{ spire_clusters }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ spire_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ spire_data_dir }}"
+    create_home: false
+
+- name: Create directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ spire_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ spire_install_dir }}", mode: "0755"}
+    - {path: "{{ spire_config_dir }}", mode: "0750"}
+    - {path: "{{ spire_config_dir }}/kubeconfig", mode: "0750"}
+    # Здесь лежат закрытый ключ CA и база идентичностей — доступ только
+    # службе.
+    - {path: "{{ spire_data_dir }}", owner: "{{ spire_user }}", mode: "0700"}
+    - {path: "{{ spire_log_dir }}", owner: "{{ spire_user }}", mode: "0750"}
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Check the installed version
+  ansible.builtin.command:
+    cmd: "{{ spire_install_dir }}/bin/spire-server --version"
+  register: spire_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install SPIRE
+  when: spire_version not in (spire_installed.stderr | default('') ~ spire_installed.stdout | default(''))
+  block:
+    - name: Download the distribution
+      ansible.builtin.get_url:
+        url: "{{ spire_download_url }}"
+        dest: "/tmp/spire-{{ spire_version }}.tar.gz"
+        checksum: "{{ spire_download_checksum | default(omit, true) }}"
+        mode: "0644"
+
+    - name: Unpack the distribution
+      ansible.builtin.unarchive:
+        src: "/tmp/spire-{{ spire_version }}.tar.gz"
+        dest: "{{ spire_install_dir }}"
+        remote_src: true
+        extra_opts: [--strip-components=1]
+        owner: root
+        group: root
+
+    - name: Remove the archive
+      ansible.builtin.file:
+        path: "/tmp/spire-{{ spire_version }}.tar.gz"
+        state: absent
+
+# Аттестатор k8s_psat проверяет projected-токен обращением к apiserver того
+# кластера. Направление обращения обратное привычному: сервер SPIRE идёт в
+# кластер, а не кластер к серверу. Значит нужен сетевой доступ и kubeconfig.
+- name: Install kubeconfig for every cluster
+  ansible.builtin.copy:
+    src: "{{ item.kubeconfig_src }}"
+    dest: "{{ spire_config_dir }}/kubeconfig/{{ item.name }}.kubeconfig"
+    owner: root
+    group: "{{ spire_group }}"
+    mode: "0640"
+  loop: "{{ spire_clusters }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Restart spire-server
+
+- name: Render the server configuration
+  ansible.builtin.template:
+    src: server.conf.j2
+    dest: "{{ spire_config_dir }}/server.conf"
+    owner: root
+    group: "{{ spire_group }}"
+    mode: "0640"
+    # Проверка синтаксиса до записи: сервер с битой конфигурацией не
+    # стартует, а откат вручную на узле неудобен.
+    validate: "{{ spire_install_dir }}/bin/spire-server validate -config %s"
+  notify: Restart spire-server
+
+- name: Install the systemd unit
+  ansible.builtin.template:
+    src: spire-server.service.j2
+    dest: /etc/systemd/system/spire-server.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart spire-server
+
+- name: Enable and start the server
+  ansible.builtin.systemd:
+    name: spire-server
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: spire_manage_service | bool
+
+# Обязательно ДО проверки: изменение конфигурации применяется обработчиком,
+# а тот сработал бы только в конце play — проверка прошла бы по старой
+# конфигурации. Та же ошибка уже стоила отдельного разбора в роли
+# haproxy_keepalived.
+- name: Apply pending restarts before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the server is healthy
+  ansible.builtin.command:
+    cmd: "{{ spire_install_dir }}/bin/spire-server healthcheck"
+  register: spire_health
+  retries: 12
+  delay: 5
+  until: spire_health.rc == 0
+  changed_when: false
+  when: spire_manage_service | bool
+
+- name: Read the trust bundle
+  ansible.builtin.command:
+    cmd: "{{ spire_install_dir }}/bin/spire-server bundle show"
+  register: spire_bundle
+  changed_when: false
+  when: spire_manage_service | bool
+
+- name: Report how to hand the bundle to agents
+  ansible.builtin.debug:
+    msg: >-
+      SPIRE server {{ spire_version }} работает, домен доверия
+      {{ spire_trust_domain }}. Корневой сертификат получен
+      ({{ spire_bundle.stdout_lines | default([]) | length }} строк) —
+      его нужно передать агентам в кластерах вместе с адресом
+      {{ ansible_default_ipv4.address | default('<адрес сервера>') }}:{{ spire_bind_port }}.
+      Агенты и записи регистрации для Cilium этой ролью НЕ настраиваются.
+  when: spire_manage_service | bool

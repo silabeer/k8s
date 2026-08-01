@@ -1,0 +1,23 @@
+{# {{ ansible_managed }} #}
+[Unit]
+Description=SPIRE Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ spire_user }}
+Group={{ spire_group }}
+ExecStart={{ spire_install_dir }}/bin/spire-server run -config {{ spire_config_dir }}/server.conf
+Restart=on-failure
+RestartSec=5
+# Каталог данных содержит закрытые ключи CA: доступ только владельцу.
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ spire_data_dir }} {{ spire_log_dir }}
+
+[Install]
+WantedBy=multi-user.target

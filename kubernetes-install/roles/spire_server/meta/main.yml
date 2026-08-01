@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: spire_server
+  description: SPIRE server — выдача идентичностей SPIFFE рабочим нагрузкам
+  license: proprietary
+  min_ansible_version: "2.15"
+dependencies: []
