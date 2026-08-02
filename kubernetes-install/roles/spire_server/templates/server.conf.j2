@@ -15,8 +15,18 @@ server {
     bind_port    = "{{ spire_bind_port }}"
     trust_domain = "{{ spire_trust_domain }}"
     data_dir     = "{{ spire_data_dir }}"
+    socket_path  = "{{ spire_socket_path }}"
     log_level    = "INFO"
-    log_file     = "{{ spire_log_dir }}/server.log"
+{#
+  log_file НЕ задаётся: журнал идёт в stdout, а его подхватывает journald —
+  туда же, где логи всех остальных служб узла.
+
+  Файл был первой попыткой и не заработал: под ProtectSystem=strict запись
+  в /var/log отвергается, даже когда права на каталоге верные и та же
+  запись от имени того же пользователя из оболочки проходит. Обходить это
+  через ReadWritePaths можно, но незачем: отдельный файл на systemd-хосте
+  только раздваивает место, куда смотреть при разборе.
+-#}
 
     ca_ttl                = "{{ spire_ca_ttl }}"
     default_x509_svid_ttl = "{{ spire_default_x509_svid_ttl }}"
@@ -32,6 +42,7 @@ server {
 plugins {
     DataStore "{{ spire_datastore_plugin }}" {
         plugin_data {
+            database_type     = "{{ spire_datastore_type }}"
             connection_string = "{{ spire_datastore_connection_string }}"
         }
     }

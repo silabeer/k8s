@@ -3,6 +3,12 @@
   ansible.builtin.assert:
     that:
       - spire_trust_domain | length > 0
+      # Проверка типа обязательна: `length > 0` истинно и для строки,
+      # поэтому неверно переданный параметр проходил первую проверку и
+      # падал позже — на loop, с сообщением про 'list', not 'str',
+      # по которому причину не найти.
+      - spire_clusters is sequence
+      - spire_clusters is not string
       - spire_clusters | length > 0
     fail_msg: >-
       Задайте spire_trust_domain и хотя бы один кластер в spire_clusters.
@@ -47,7 +53,6 @@
     # Здесь лежат закрытый ключ CA и база идентичностей — доступ только
     # службе.
     - {path: "{{ spire_data_dir }}", owner: "{{ spire_user }}", mode: "0700"}
-    - {path: "{{ spire_log_dir }}", owner: "{{ spire_user }}", mode: "0750"}
   loop_control:
     label: "{{ item.path }}"
 
@@ -136,7 +141,7 @@
 
 - name: Verify the server is healthy
   ansible.builtin.command:
-    cmd: "{{ spire_install_dir }}/bin/spire-server healthcheck"
+    cmd: "{{ spire_install_dir }}/bin/spire-server healthcheck -socketPath {{ spire_socket_path }}"
   register: spire_health
   retries: 12
   delay: 5
@@ -146,7 +151,7 @@
 
 - name: Read the trust bundle
   ansible.builtin.command:
-    cmd: "{{ spire_install_dir }}/bin/spire-server bundle show"
+    cmd: "{{ spire_install_dir }}/bin/spire-server bundle show -socketPath {{ spire_socket_path }}"
   register: spire_bundle
   changed_when: false
   when: spire_manage_service | bool

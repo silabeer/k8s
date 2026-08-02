@@ -18,7 +18,12 @@ spire_group: spire
 spire_install_dir: /opt/spire
 spire_config_dir: /etc/spire
 spire_data_dir: /var/lib/spire
-spire_log_dir: /var/log/spire
+
+# Путь административного сокета. Задаётся ЯВНО и вне /tmp: юнит работает с
+# PrivateTmp, и сокет по умолчанию (/tmp/spire-server/private/api.sock)
+# оказывается в приватном пространстве имён — снаружи его не видно, и
+# spire-server healthcheck не находит сервер, хотя тот полностью здоров.
+spire_socket_path: /var/lib/spire/api.sock
 
 # Домен доверия. Меняется ТОЛЬКО вместе с переизданием всех идентичностей:
 # он входит в каждый SPIFFE ID и в сертификаты. Значение по умолчанию из
@@ -42,10 +47,16 @@ spire_ca_subject:
   organization: "Platform"
   common_name: "SPIRE CA"
 
-# Хранилище. sqlite3 достаточно для одного сервера; для отказоустойчивой
-# пары нужен внешний PostgreSQL и общий datastore — тогда меняется и схема
+# Хранилище. Имя плагина — sql, а конкретная база задаётся ОТДЕЛЬНЫМ полем
+# database_type внутри него: sqlite3, postgres или mysql. Плагина с именем
+# «sqlite3» не существует, и такая конфигурация отвергается с невнятным
+# «malformed database type configuration».
+#
+# sqlite3 достаточно для одного сервера; для отказоустойчивой пары нужен
+# внешний PostgreSQL и общий datastore — тогда меняется и схема
 # развёртывания, и эта роль (раздел «Ограничения» в README).
-spire_datastore_plugin: sqlite3
+spire_datastore_plugin: sql
+spire_datastore_type: sqlite3
 spire_datastore_connection_string: "{{ spire_data_dir }}/datastore.sqlite3"
 
 # Кластеры, узлам которых сервер доверяет. Для каждого нужен kubeconfig НА

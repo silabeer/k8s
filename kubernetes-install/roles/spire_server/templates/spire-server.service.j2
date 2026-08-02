@@ -5,10 +5,14 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# Журнал идёт в journald: StandardOutput по умолчанию и так туда, но
+# указано явно, чтобы не возникало соблазна вернуть файл.
 Type=simple
 User={{ spire_user }}
 Group={{ spire_group }}
 ExecStart={{ spire_install_dir }}/bin/spire-server run -config {{ spire_config_dir }}/server.conf
+StandardOutput=journal
+StandardError=journal
 Restart=on-failure
 RestartSec=5
 # Каталог данных содержит закрытые ключи CA: доступ только владельцу.
@@ -17,7 +21,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths={{ spire_data_dir }} {{ spire_log_dir }}
+ReadWritePaths={{ spire_data_dir }}
 
 [Install]
 WantedBy=multi-user.target
