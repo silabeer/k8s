@@ -13,6 +13,10 @@ cilium_manifest_path: /etc/kubernetes/bootstrap/cilium-rendered.yaml
 # см. пояснение в tasks/render_apply.yml.
 cilium_configmap_manifest_path: /etc/kubernetes/bootstrap/cilium-configmap.yaml
 
+# Каталог CRD Gateway API в GitOps-репозитории. Их применяет и эта роль
+# (до чарта), и Argo CD — из одного и того же места.
+cilium_gateway_api_crds_path: infrastructure/gateway-api-crds
+
 # Argo CD Application, забирающая Cilium под управление (wave -10).
 # Её наличие в статусе Synced означает, что роль больше не должна
 # применять манифесты (раздел 24).

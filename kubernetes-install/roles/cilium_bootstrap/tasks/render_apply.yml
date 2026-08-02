@@ -69,6 +69,82 @@
     quiet: true
 
 # =============================================================================
+# CRD Gateway API ставятся ДО применения чарта
+#
+# При gatewayAPI.gatewayClass.create=true чарт рендерит объект
+# GatewayClass. Он относится к API gateway.networking.k8s.io, которого в
+# чистом кластере нет: этап 50 идёт задолго до Argo CD, и поставить CRD
+# больше некому. kubectl отвечает «no matches for kind GatewayClass», и
+# падает применение ВСЕГО манифеста, то есть установка кластера.
+#
+# Признак берётся из самого отрендеренного манифеста, а не из отдельной
+# переменной: values — единственный источник правды, и вводить второй
+# означало бы, что когда-нибудь они разойдутся.
+# =============================================================================
+- name: Determine whether the manifest needs Gateway API CRDs
+  ansible.builtin.set_fact:
+    cilium_needs_gateway_api_crds: >-
+      {{ cilium_rendered.stdout is search('gateway\.networking\.k8s\.io') }}
+
+- name: Install the Gateway API CRDs
+  when: cilium_needs_gateway_api_crds | bool
+  block:
+    - name: Check the CRDs are present in the GitOps repository
+      ansible.builtin.stat:
+        path: "{{ cilium_checkout_dir }}/{{ cilium_gateway_api_crds_path }}/kustomization.yaml"
+      register: cilium_gateway_api_crds_stat
+
+    - name: Assert the CRDs are available
+      ansible.builtin.assert:
+        that:
+          - cilium_gateway_api_crds_stat.stat.exists
+        fail_msg: >-
+          Values включают Gateway API, но в GitOps-репозитории нет
+          {{ cilium_gateway_api_crds_path }}. CRD должны лежать там же,
+          откуда их берёт Argo CD: этап 50 применяет их раньше, чем Argo CD
+          существует, и второй источник неминуемо разошёлся бы с первым.
+        quiet: true
+
+    - name: Apply the Gateway API CRDs
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - apply
+          - --server-side
+          - --force-conflicts
+          - --field-manager={{ cilium_field_manager }}
+          - -k
+          - "{{ cilium_checkout_dir }}/{{ cilium_gateway_api_crds_path }}"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: cilium_gateway_api_crds_apply
+      # kubectl apply --server-side печатает «serverside-applied»
+      # независимо от того, изменилось что-нибудь или нет; слов
+      # created/configured в его выводе не бывает. Любое условие по
+      # выводу здесь либо всегда ложно, либо всегда истинно, поэтому
+      # признак изменения берётся не отсюда, а из явных сравнений ниже:
+      # данные ConfigMap и поколение DaemonSet.
+      changed_when: false
+
+    - name: Wait for the CRDs to be established
+      # Между применением и готовностью CRD есть окно: apiserver ещё не
+      # обслуживает новый тип, и следующий apply падает так же, как если
+      # бы CRD не было вовсе.
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - --for=condition=Established
+          - --timeout=120s
+          - crd/gatewayclasses.gateway.networking.k8s.io
+          - crd/gateways.gateway.networking.k8s.io
+          - crd/httproutes.gateway.networking.k8s.io
+          - crd/tlsroutes.gateway.networking.k8s.io
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+# =============================================================================
 # ConfigMap применяется ОТДЕЛЬНО и ПЕРВЫМ
 #
 # Часть ключей cilium-config определяет, какие CRD регистрирует оператор
@@ -125,7 +201,13 @@
   environment:
     KUBECONFIG: "{{ kubeconfig_path }}"
   register: cilium_configmap_apply
-  changed_when: "'configured' in cilium_configmap_apply.stdout"
+  # kubectl apply --server-side печатает «serverside-applied»
+  # независимо от того, изменилось что-нибудь или нет; слов
+  # created/configured в его выводе не бывает. Любое условие по
+  # выводу здесь либо всегда ложно, либо всегда истинно, поэтому
+  # признак изменения берётся не отсюда, а из явных сравнений ниже:
+  # данные ConfigMap и поколение DaemonSet.
+  changed_when: false
 
 - name: Read the live configuration after applying
   kubernetes.core.k8s_info:
@@ -206,7 +288,13 @@
   environment:
     KUBECONFIG: "{{ kubeconfig_path }}"
   register: cilium_apply
-  changed_when: "'configured' in cilium_apply.stdout or 'created' in cilium_apply.stdout"
+  # kubectl apply --server-side печатает «serverside-applied»
+  # независимо от того, изменилось что-нибудь или нет; слов
+  # created/configured в его выводе не бывает. Любое условие по
+  # выводу здесь либо всегда ложно, либо всегда истинно, поэтому
+  # признак изменения берётся не отсюда, а из явных сравнений ниже:
+  # данные ConfigMap и поколение DaemonSet.
+  changed_when: false
 
 # =============================================================================
 # Агенты
