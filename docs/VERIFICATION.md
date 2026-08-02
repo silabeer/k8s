@@ -82,6 +82,32 @@ kubectl -n kube-system get secret cilium-ca -o jsonpath='{.data.ca\.crt}' \
 kubectl exec <клиент> -- wget -T 4 -qO- http://<IP пода сервера>/
 ```
 
+### 1.8. Проверки снаружи выполнять в обход прокси
+
+Если на вашей машине настроен HTTP-прокси, `curl` уйдёт в него и
+`--resolve` будет проигнорирован. Проверка HTTPS-входа так давала
+`HTTP 000` со всех узлов и выглядела как отказ шлюза, хотя отказывал
+прокси. Во всех проверках «снаружи» добавляйте `--noproxy '*'`.
+
+### 1.9. Синхронизацию Argo CD без CLI запускать только с syncOptions
+
+Если CLI `argocd` недоступен, синхронизацию запускают патчем поля
+`operation`. Argo CD **не подставляет** в такую операцию `syncOptions`
+из самого приложения, поэтому их нужно перечислить руками:
+
+```bash
+kubectl -n argocd patch app <name> --type merge -p '{"operation":{
+  "sync":{"revision":"HEAD",
+          "syncOptions":["CreateNamespace=true","ServerSideApply=true"]},
+  "initiatedBy":{"username":"<кто>"}}}'
+```
+
+Без них теряется `CreateNamespace=true`: namespace не создаётся, все
+задачи падают с `namespaces "<ns>" not found`, а приложение показывает
+`health=Healthy` — просто потому, что здоровых ресурсов у него нет.
+Признак именно этой причины: в `syncResult` **нет задачи с `Namespace`**.
+Список опций берите из `spec.syncPolicy.syncOptions` приложения.
+
 ---
 
 ## 2. Установка кластера
@@ -319,6 +345,88 @@ sudo mv /root/kube-apiserver.yaml /etc/kubernetes/manifests/   # вернуть
 
 Ожидается: рабочие нагрузки продолжают работать, в mesh соседний кластер
 продолжает получать ответы от подов этого кластера.
+
+---
+
+## 6a. Gateway API
+
+**Цель:** убедиться, что вход снаружи работает, маршрутизация идёт по
+правилам `HTTPRoute`, а TLS завершается сертификатом cert-manager.
+
+**Предусловия.** `kubeProxyReplacement: true` (ADR 0001). CRD Gateway API
+standard-канала **и `TLSRoute` из experimental** — без него оператор
+Cilium валится на каждой реконсиляции.
+
+### 6a.1. Реализация зарегистрирована
+
+```bash
+kubectl get gatewayclass
+kubectl get gatewayclass cilium -o jsonpath='{.status.conditions[*].reason}'
+```
+
+Ожидается класс `cilium` с контроллером `io.cilium/gateway-controller` и
+`Accepted`. **Пустой список — самый вероятный отказ.** Он не значит, что
+Cilium сломан: `cilium status` при этом чистый, а `enable-gateway-api` в
+`cilium-config` стоит `true`. Проверьте, что в values задано явное
+`gatewayAPI.gatewayClass.create: "true"` — при умолчании `auto` объект не
+создаётся никогда, потому что роль вызывает `helm template` без
+подключения к кластеру.
+
+### 6a.2. Gateway получил адрес
+
+```bash
+kubectl -n <ns> get gateway <имя> \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}{"\n"}{end}'
+```
+
+`Programmed=False AddressNotAssigned` означает, что адрес выдавать некому:
+нужен либо облачный LoadBalancer, либо `CiliumLoadBalancerIPPool`. На
+стенде адрес из пула виден изнутри, но **снаружи не доступен** — его
+некому анонсировать; для этого нужны L2-анонсы или BGP. Вход снаружи в
+таком случае проверяется через NodePort сервиса `cilium-gateway-<имя>`.
+
+### 6a.3. Маршрутизация
+
+Обязательно проверяются оба пути — совпадающий и нет:
+
+```bash
+curl --noproxy '*' -o /dev/null -w '%{http_code}\n' http://<узел>:<nodePort>/gw
+curl --noproxy '*' -o /dev/null -w '%{http_code}\n' http://<узел>:<nodePort>/nomatch
+```
+
+Ожидается 200 и 404. Если оба дают 200 — правило не применяется и
+маршрутизация не проверена.
+
+**`503 upstream connect error ... connection timeout` — это чаще всего
+сетевая политика, а не приложение.** Envoy обращается к поду с адреса
+узла под идентичностью `reserved:ingress`, и базовый `default-deny-ingress`
+его отбрасывает. Проверяется так:
+
+```bash
+kubectl -n kube-system exec <под cilium> -c cilium-agent -- \
+  hubble observe --namespace <ns> --verdict DROPPED --last 20
+```
+
+Строка `Policy denied DROPPED` подтверждает причину. Лечится
+`CiliumNetworkPolicy` с `fromEntities: [ingress]` — обычным
+`NetworkPolicy` этот источник не выражается.
+
+### 6a.4. TLS
+
+```bash
+kubectl -n <ns> get certificate            # ожидается READY=True
+echo | openssl s_client -connect <узел>:<nodePort https> \
+  -servername <имя из listener> 2>/dev/null | openssl x509 -noout -issuer -dates
+curl --noproxy '*' --cacert <CA cert-manager> \
+  --resolve <имя>:<порт>:<узел> https://<имя>:<порт>/gw
+```
+
+Отказные пути проверяются обязательно:
+
+* без `--cacert` — `exit=60` (сертификат не проверен);
+* с чужим именем в SNI — `exit=35` (подходящего listener нет).
+
+Если оба варианта проходят успешно, TLS не проверен.
 
 ---
 
