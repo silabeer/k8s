@@ -51,6 +51,14 @@
         ansible_become: false
       no_log: true
 
+    # Токен нужен всем последующим шагам. Без него bao secrets list падает,
+    # а условие на rc молча пропускает включение KV — и роль отчитывается
+    # об успехе, ничего не настроив.
+    - name: Remember the root token for the rest of the run
+      ansible.builtin.set_fact:
+        openbao_root_token: "{{ (openbao_init.stdout | from_json).root_token }}"
+      no_log: true
+
     - name: Warn about the initialization output
       ansible.builtin.debug:
         msg: >-
@@ -61,6 +69,37 @@
           не выдаются: их потеря — потеря всех секретов без восстановления.
           В production корневой токен после настройки отзывается, а работа
           идёт через AppRole с ограниченной политикой.
+
+# Хранилище уже было инициализировано ранее: токен взять неоткуда, кроме
+# как от оператора. Молча продолжать нельзя — дальнейшие шаги требуют прав.
+- name: Recover the root token from the saved output
+  when:
+    - openbao_root_token is not defined or openbao_root_token | length == 0
+    - openbao_state.initialized | bool
+  block:
+    - name: Look for the saved initialization output
+      ansible.builtin.stat:
+        path: "{{ openbao_init_output_path | expanduser }}"
+      delegate_to: localhost
+      vars:
+        ansible_become: false
+      register: openbao_init_file
+
+    - name: Read the saved root token
+      ansible.builtin.slurp:
+        src: "{{ openbao_init_output_path | expanduser }}"
+      delegate_to: localhost
+      vars:
+        ansible_become: false
+      register: openbao_saved_for_token
+      when: openbao_init_file.stat.exists
+      no_log: true
+
+    - name: Restore the root token
+      ansible.builtin.set_fact:
+        openbao_root_token: "{{ (openbao_saved_for_token.content | b64decode | from_json).root_token }}"
+      when: openbao_init_file.stat.exists
+      no_log: true
 
 - name: Unseal the store
   when:
