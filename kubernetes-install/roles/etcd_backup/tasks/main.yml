@@ -11,6 +11,24 @@
     mode: "0755"
   when: etcd_backup_render_cronjob_reference | bool
 
+# Версия берётся из живого манифеста, а не оставляется плейсхолдером:
+# забытый плейсхолдер даёт задание, которое не запустится.
+- name: Read the etcd static pod manifest
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/etcd.yaml
+  register: etcd_backup_etcd_manifest
+  failed_when: false
+  when: etcd_backup_render_cronjob_reference | bool
+
+- name: Detect the etcd image used by the cluster
+  ansible.builtin.set_fact:
+    etcd_backup_detected_image: >-
+      {{ (etcd_backup_etcd_manifest.content | b64decode
+          | regex_search('image:\s*(\S+)', '\1') | first) }}
+  when:
+    - etcd_backup_render_cronjob_reference | bool
+    - etcd_backup_etcd_manifest.content is defined
+
 - name: Render the reference CronJob manifest for the GitOps repository
   ansible.builtin.template:
     src: etcd-backup-cronjob.yaml.j2

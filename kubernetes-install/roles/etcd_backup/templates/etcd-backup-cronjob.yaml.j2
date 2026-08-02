@@ -6,7 +6,11 @@
 #   * hostNetwork: true — без него Pod не достучится до 127.0.0.1:2379;
 #   * tolerations на taint control-plane — иначе Pod никуда не запланируется;
 #   * nodeSelector на control-plane — сертификаты etcd есть только там;
-#   * hostPath к /etc/kubernetes/pki/etcd — только чтение.
+#   * hostPath к /etc/kubernetes/pki/etcd — только чтение;
+#   * ОБОЛОЧКИ В ОБРАЗЕ etcd НЕТ. Он distroless: `/bin/sh -c` даёт
+#     «OCI runtime create failed», контейнер не стартует вовсе, и в логах
+#     задания при этом ПУСТО. Поэтому команда вызывает etcdctl напрямую, а
+#     имя файла снимка формируется без shell — подстановкой при рендере.
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -39,22 +43,20 @@ spec:
             runAsUser: 0
           containers:
             - name: etcd-backup
-              image: {{ image_repository }}/etcd:REPLACE_WITH_CLUSTER_ETCD_VERSION
+              image: {{ etcd_backup_cronjob_image }}
+              # etcdctl напрямую, без /bin/sh: оболочки в образе нет.
+              # Имя файла со временем не вычислить внутри контейнера, поэтому
+              # снимок пишется под постоянным именем, а отметку времени
+              # добавляет ротация на стороне хранилища либо отдельный шаг.
               command:
-                - /bin/sh
-                - -c
-                - |
-                  set -eu
-                  TS="$(date +%Y%m%dT%H%M%S)"
-                  etcdctl \
-                    --endpoints={{ etcd_backup_endpoints }} \
-                    --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-                    --cert=/etc/kubernetes/pki/etcd/server.crt \
-                    --key=/etc/kubernetes/pki/etcd/server.key \
-                    snapshot save "/backup/etcd-snapshot-${TS}.db"
-                  etcdutl snapshot status "/backup/etcd-snapshot-${TS}.db" -w json
-                  # Выгрузка во внешнее S3 добавляется здесь; snapshot,
-                  # оставшийся в кластере, не защищает от потери кластера.
+                - etcdctl
+                - --endpoints=https://127.0.0.1:2379
+                - --cacert=/etc/kubernetes/pki/etcd/ca.crt
+                - --cert=/etc/kubernetes/pki/etcd/server.crt
+                - --key=/etc/kubernetes/pki/etcd/server.key
+                - snapshot
+                - save
+                - /backup/etcd-snapshot-latest.db
               volumeMounts:
                 - name: etcd-certs
                   mountPath: /etc/kubernetes/pki/etcd

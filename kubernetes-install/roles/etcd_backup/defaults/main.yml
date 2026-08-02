@@ -31,3 +31,7 @@ etcd_backup_s3_prefix: "etcd/{{ cluster_name }}"
 # Референсный манифест CronJob для GitOps-репозитория
 etcd_backup_render_cronjob_reference: true
 etcd_backup_cronjob_reference_path: /etc/kubernetes/bootstrap/etcd-backup-cronjob.reference.yaml
+# Образ для CronJob. По умолчанию берётся из живого манифеста etcd — иначе
+# в референсном манифесте оставался плейсхолдер, который оператор должен был
+# заменить руками, а забытый плейсхолдер даёт неработающее задание.
+etcd_backup_cronjob_image: "{{ etcd_backup_detected_image | default(image_repository ~ '/etcd:REPLACE_WITH_CLUSTER_ETCD_VERSION', true) }}"
