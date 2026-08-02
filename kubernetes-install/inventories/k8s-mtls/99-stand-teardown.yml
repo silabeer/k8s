@@ -1,0 +1,130 @@
+---
+# Очистка стенда: разбор кластера до состояния «чистые ВМ».
+#
+# ЭТО СТЕНДОВЫЙ ИНСТРУМЕНТ. Он живёт в каталоге inventory, а не в playbooks/,
+# намеренно: автоматизированный `kubeadm reset` в общем каталоге —
+# приглашение запустить его не там. В production узлы выводят по одному
+# через playbooks/maintenance/remove-node.yml, а не сносят разом.
+#
+# Уничтожает: этот кластер целиком. etcd, PKI, конфигурацию, состояние CNI,
+# данные local-path-provisioner. Снимки etcd в /var/backups/etcd
+# СОХРАНЯЮТСЯ — они могут понадобиться.
+#
+# Запуск:
+#   ansible-playbook -i inventories/k8s-mtls/hosts.local.yml \
+#     inventories/k8s-mtls/99-stand-teardown.yml -e teardown_confirm=<cluster_name>
+
+- name: Tear down the stand cluster
+  hosts: kubernetes
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  pre_tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - teardown_confirm is defined
+          - teardown_confirm == cluster_name
+        fail_msg: >-
+          Очистка уничтожает кластер {{ cluster_name }} целиком.
+          Подтвердите именем: -e teardown_confirm={{ cluster_name }}
+        quiet: true
+
+  tasks:
+    # kubeadm reset снимает статические поды, чистит /etc/kubernetes и
+    # каталог данных etcd. Останавливать kubelet заранее не нужно — reset
+    # делает это сам; ручная остановка до reset оставляет статические поды
+    # запущенными в containerd.
+    - name: Run kubeadm reset
+      ansible.builtin.command:
+        cmd: kubeadm reset --force
+      register: teardown_reset
+      changed_when: true
+      failed_when:
+        - teardown_reset.rc != 0
+        - '"not found" not in teardown_reset.stderr'
+
+    - name: Stop and disable kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    # kubeadm reset сам предупреждает, что правила пакетного фильтра
+    # остаются, и чистить их надо вручную. Оставшиеся цепочки KUBE-* и
+    # CILIUM-* переживают переустановку и дают отказы, которые выглядят как
+    # сетевые проблемы нового кластера.
+    - name: Flush packet filter rules left by kube-proxy and CNI
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          for t in filter nat mangle raw; do
+            iptables -t $t -F || true
+            iptables -t $t -X || true
+          done
+          ip6tables -F || true
+          ip6tables -X || true
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Remove CNI interfaces left by Cilium
+      ansible.builtin.shell:
+        cmd: |
+          for i in cilium_host cilium_net cilium_vxlan; do
+            ip link delete "$i" 2>/dev/null || true
+          done
+          for i in $(ip -o link show | awk -F': ' '/lxc/ {print $2}' | cut -d@ -f1); do
+            ip link delete "$i" 2>/dev/null || true
+          done
+          true
+        executable: /bin/bash
+      changed_when: true
+
+    # Cilium монтирует cgroup2 внутрь /run/cilium. Пока точка смонтирована,
+    # каталог не удаляется: rmtree упирается в файлы cgroup и падает с
+    # «Operation not permitted».
+    - name: Unmount the cgroup2 filesystem mounted by Cilium
+      ansible.posix.mount:
+        path: /run/cilium/cgroupv2
+        state: unmounted
+      failed_when: false
+
+    # Каталоги на bpffs и на смонтированных ФС модулем file не удаляются
+    # надёжно, поэтому здесь rm: закреплённые карты BPF переживают reset и
+    # достаются новому кластеру.
+    - name: Remove pinned BPF state
+      ansible.builtin.command:
+        cmd: rm -rf /sys/fs/bpf/tc /sys/fs/bpf/cilium
+        removes: /sys/fs/bpf/tc
+      changed_when: true
+
+    - name: Remove leftover state directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/cni/net.d
+        - /var/lib/cni
+        - /run/cilium
+        - /etc/kubernetes
+        - /var/lib/etcd
+        - /opt/local-path-provisioner
+        - /var/lib/etcd-restore
+
+    # Таймер снимков ставится этапом 80 и переживает reset: он не часть
+    # кластера. Оставленный включённым, он будет ежедневно падать на
+    # несуществующем etcd.
+    - name: Disable the etcd snapshot timer
+      ansible.builtin.systemd:
+        name: etcd-backup.timer
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Report the result
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} очищен. Снимки в /var/backups/etcd
+          сохранены. Установка с нуля: playbooks/site.yml.
