@@ -9,6 +9,9 @@ cilium_values_relative_path: "values/cilium.yaml"
 
 cilium_checkout_dir: /tmp/gitops-checkout
 cilium_manifest_path: /etc/kubernetes/bootstrap/cilium-rendered.yaml
+# ConfigMap применяется отдельным шагом и раньше остального манифеста —
+# см. пояснение в tasks/render_apply.yml.
+cilium_configmap_manifest_path: /etc/kubernetes/bootstrap/cilium-configmap.yaml
 
 # Argo CD Application, забирающая Cilium под управление (wave -10).
 # Её наличие в статусе Synced означает, что роль больше не должна

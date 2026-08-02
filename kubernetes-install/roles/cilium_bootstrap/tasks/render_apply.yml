@@ -58,17 +58,6 @@
     group: root
     mode: "0600"
 
-- name: Read the live configuration before applying
-  # Нужно для сравнения ПОСЛЕ применения: агенты и оператор читают
-  # cilium-config только при старте, и изменение ConfigMap само по себе
-  # ничего не меняет в работе кластера.
-  kubernetes.core.k8s_info:
-    kubeconfig: "{{ kubeconfig_path }}"
-    kind: ConfigMap
-    namespace: "{{ cilium_namespace }}"
-    name: cilium-config
-  register: cilium_config_before
-
 - name: Assert the rendered manifest is not empty
   ansible.builtin.assert:
     that:
@@ -78,6 +67,129 @@
       Рендер чарта Cilium не дал DaemonSet. Проверьте values в
       {{ cilium_values_path }} и версию чарта {{ cni.version }}.
     quiet: true
+
+# =============================================================================
+# ConfigMap применяется ОТДЕЛЬНО и ПЕРВЫМ
+#
+# Часть ключей cilium-config определяет, какие CRD регистрирует оператор
+# (так ведёт себя Gateway API). Агент, стартовавший раньше, ждёт их пять
+# минут и завершается с level=fatal.
+#
+# Одним манифестом правильный порядок недостижим. При rollOutCiliumPods
+# чарт проставляет DaemonSet контрольную сумму конфигурации, поэтому
+# агенты начинают перекатываться СРАЗУ на apply; у Deployment оператора
+# такой отметки нет, пока не задан operator.rollOutPods, — и он остаётся
+# работать со старой конфигурацией. Наблюдалось вживую: ready=1/3, уцелел
+# ровно тот узел, где под агента не трогали.
+#
+# Поэтому порядок разнесён по шагам: ConfigMap → оператор → всё остальное.
+# =============================================================================
+- name: Render the Cilium ConfigMap alone
+  ansible.builtin.command:
+    argv: >-
+      {{ ['helm', 'template', cilium_release_name, cilium_chart_ref]
+         + cilium_repo_args
+         + ['--version', cni.version,
+            '--namespace', cilium_namespace,
+            '--values', cilium_values_path,
+            '--show-only', 'templates/cilium-configmap.yaml'] }}
+  register: cilium_configmap_rendered
+  changed_when: false
+
+- name: Write the rendered ConfigMap
+  ansible.builtin.copy:
+    content: "{{ cilium_configmap_rendered.stdout }}"
+    dest: "{{ cilium_configmap_manifest_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Read the live configuration before applying
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ cilium_namespace }}"
+    name: cilium-config
+  register: cilium_config_before
+
+- name: Apply the ConfigMap
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - apply
+      - --server-side
+      - --force-conflicts
+      - --field-manager={{ cilium_field_manager }}
+      - -f
+      - "{{ cilium_configmap_manifest_path }}"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: cilium_configmap_apply
+  changed_when: "'configured' in cilium_configmap_apply.stdout"
+
+- name: Read the live configuration after applying
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ cilium_namespace }}"
+    name: cilium-config
+  register: cilium_config_after
+
+- name: Determine whether the configuration changed
+  ansible.builtin.set_fact:
+    # Первичная установка сюда не попадает: до неё ConfigMap не
+    # существует, и перезапускать нечего — поды создаются заново.
+    cilium_config_changed: >-
+      {{ (cilium_config_before.resources | length > 0)
+         and (cilium_config_before.resources[0].data | default({}))
+             != (cilium_config_after.resources[0].data | default({})) }}
+
+- name: Restart the operator before the rest of the manifest
+  when: cilium_config_changed | bool
+  block:
+    - name: Report the changed keys
+      ansible.builtin.debug:
+        msg: >-
+          cilium-config изменён — оператор перезапускается ДО применения
+          остального манифеста. Затронутые ключи:
+          {{ ((cilium_config_before.resources[0].data | default({}) | dict2items)
+              | symmetric_difference(
+                  cilium_config_after.resources[0].data | default({}) | dict2items))
+             | map(attribute='key') | unique | sort | join(', ') }}
+
+    - name: Restart the operator
+      ansible.builtin.command:
+        argv: [kubectl, -n, "{{ cilium_namespace }}", rollout, restart, deployment/cilium-operator]
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: true
+
+    - name: Wait for the operator to finish rolling out
+      # Именно ожидание готовности, а не пауза: агенты не должны
+      # стартовать раньше, чем оператор зарегистрирует CRD.
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - -n
+          - "{{ cilium_namespace }}"
+          - rollout
+          - status
+          - deployment/cilium-operator
+          - --timeout={{ cilium_rollout_timeout }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+- name: Read the DaemonSet generation before applying
+  # Нужно, чтобы отличить два случая: чарт сам перекатил агентов по
+  # контрольной сумме (rollOutCiliumPods) или не перекатил вовсе — тогда
+  # новая конфигурация не подействует, пока агенты не перезапустить.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: DaemonSet
+    namespace: "{{ cilium_namespace }}"
+    name: cilium
+  register: cilium_ds_before
 
 # Server-Side Apply тем же field manager, которым потом работает Argo CD:
 # при takeover владение полями переходит без конфликтов.
@@ -97,78 +209,34 @@
   changed_when: "'configured' in cilium_apply.stdout or 'created' in cilium_apply.stdout"
 
 # =============================================================================
-# Перезапуск после изменения конфигурации
+# Агенты
 #
-# Изменение cilium-config НЕ меняет шаблон пода ни у Deployment оператора,
-# ни у DaemonSet агентов, поэтому kubectl apply их не пересоздаёт. Пока поды
-# не перезапущены, новые ключи не действуют — а часть из них меняет набор
-# CRD, которые регистрирует оператор.
-#
-# Отсюда жёсткий порядок: СНАЧАЛА оператор, дождаться готовности, ПОТОМ
-# агенты. Обратный порядок наблюдался вживую при включении Gateway API:
-# агенты перезапустились раньше оператора, пять минут ждали CRD
-# CiliumEnvoyConfig, которые старый оператор не создавал, и завершались с
-# level=fatal. Датаплейн лёг на всех узлах, кроме одного, где под агента
-# не перезапускался.
+# Если чарт проставляет DaemonSet контрольную сумму конфигурации
+# (rollOutCiliumPods), apply выше уже начал перекат — тогда достаточно
+# дождаться его окончания. Если отметки нет, шаблон пода не изменился,
+# перекат не начнётся сам, и новая конфигурация не подействует: агент
+# читает cilium-config только при старте.
 # =============================================================================
-- name: Read the live configuration after applying
-  kubernetes.core.k8s_info:
-    kubeconfig: "{{ kubeconfig_path }}"
-    kind: ConfigMap
-    namespace: "{{ cilium_namespace }}"
-    name: cilium-config
-  register: cilium_config_after
-
-- name: Determine whether the configuration changed
-  ansible.builtin.set_fact:
-    # Первичная установка сюда не попадает: до неё ConfigMap не существует,
-    # и перезапускать нечего — поды и так создаются заново.
-    cilium_config_changed: >-
-      {{ (cilium_config_before.resources | length > 0)
-         and (cilium_config_before.resources[0].data | default({}))
-             != (cilium_config_after.resources[0].data | default({})) }}
-
-- name: Roll out the new configuration
+- name: Roll out the agents after a configuration change
   when: cilium_config_changed | bool
   block:
-    - name: Report the changed keys
-      ansible.builtin.debug:
-        msg: >-
-          cilium-config изменён — перезапускаются оператор, затем агенты.
-          Затронутые ключи:
-          {{ ((cilium_config_before.resources[0].data | default({}) | dict2items)
-              | symmetric_difference(
-                  cilium_config_after.resources[0].data | default({}) | dict2items))
-             | map(attribute='key') | unique | sort | join(', ') }}
+    - name: Read the DaemonSet generation after applying
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: DaemonSet
+        namespace: "{{ cilium_namespace }}"
+        name: cilium
+      register: cilium_ds_after
 
-    - name: Restart the operator first
-      ansible.builtin.command:
-        argv: [kubectl, -n, "{{ cilium_namespace }}", rollout, restart, deployment/cilium-operator]
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
-      changed_when: true
-
-    - name: Wait for the operator to finish rolling out
-      # Именно ожидание готовности, а не пауза: агенты не должны стартовать
-      # раньше, чем оператор зарегистрирует CRD.
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - -n
-          - "{{ cilium_namespace }}"
-          - rollout
-          - status
-          - deployment/cilium-operator
-          - --timeout={{ cilium_rollout_timeout }}
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
-      changed_when: false
-
-    - name: Restart the agents
+    - name: Restart the agents if the manifest did not do it
       ansible.builtin.command:
         argv: [kubectl, -n, "{{ cilium_namespace }}", rollout, restart, daemonset/cilium]
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
+      when:
+        - cilium_ds_before.resources | length > 0
+        - (cilium_ds_after.resources[0].metadata.generation | default(0))
+          == (cilium_ds_before.resources[0].metadata.generation | default(-1))
       changed_when: true
 
     - name: Wait for the agents to finish rolling out
