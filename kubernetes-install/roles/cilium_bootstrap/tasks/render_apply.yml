@@ -58,6 +58,17 @@
     group: root
     mode: "0600"
 
+- name: Read the live configuration before applying
+  # Нужно для сравнения ПОСЛЕ применения: агенты и оператор читают
+  # cilium-config только при старте, и изменение ConfigMap само по себе
+  # ничего не меняет в работе кластера.
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ cilium_namespace }}"
+    name: cilium-config
+  register: cilium_config_before
+
 - name: Assert the rendered manifest is not empty
   ansible.builtin.assert:
     that:
@@ -84,6 +95,95 @@
     KUBECONFIG: "{{ kubeconfig_path }}"
   register: cilium_apply
   changed_when: "'configured' in cilium_apply.stdout or 'created' in cilium_apply.stdout"
+
+# =============================================================================
+# Перезапуск после изменения конфигурации
+#
+# Изменение cilium-config НЕ меняет шаблон пода ни у Deployment оператора,
+# ни у DaemonSet агентов, поэтому kubectl apply их не пересоздаёт. Пока поды
+# не перезапущены, новые ключи не действуют — а часть из них меняет набор
+# CRD, которые регистрирует оператор.
+#
+# Отсюда жёсткий порядок: СНАЧАЛА оператор, дождаться готовности, ПОТОМ
+# агенты. Обратный порядок наблюдался вживую при включении Gateway API:
+# агенты перезапустились раньше оператора, пять минут ждали CRD
+# CiliumEnvoyConfig, которые старый оператор не создавал, и завершались с
+# level=fatal. Датаплейн лёг на всех узлах, кроме одного, где под агента
+# не перезапускался.
+# =============================================================================
+- name: Read the live configuration after applying
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ cilium_namespace }}"
+    name: cilium-config
+  register: cilium_config_after
+
+- name: Determine whether the configuration changed
+  ansible.builtin.set_fact:
+    # Первичная установка сюда не попадает: до неё ConfigMap не существует,
+    # и перезапускать нечего — поды и так создаются заново.
+    cilium_config_changed: >-
+      {{ (cilium_config_before.resources | length > 0)
+         and (cilium_config_before.resources[0].data | default({}))
+             != (cilium_config_after.resources[0].data | default({})) }}
+
+- name: Roll out the new configuration
+  when: cilium_config_changed | bool
+  block:
+    - name: Report the changed keys
+      ansible.builtin.debug:
+        msg: >-
+          cilium-config изменён — перезапускаются оператор, затем агенты.
+          Затронутые ключи:
+          {{ ((cilium_config_before.resources[0].data | default({}) | dict2items)
+              | symmetric_difference(
+                  cilium_config_after.resources[0].data | default({}) | dict2items))
+             | map(attribute='key') | unique | sort | join(', ') }}
+
+    - name: Restart the operator first
+      ansible.builtin.command:
+        argv: [kubectl, -n, "{{ cilium_namespace }}", rollout, restart, deployment/cilium-operator]
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: true
+
+    - name: Wait for the operator to finish rolling out
+      # Именно ожидание готовности, а не пауза: агенты не должны стартовать
+      # раньше, чем оператор зарегистрирует CRD.
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - -n
+          - "{{ cilium_namespace }}"
+          - rollout
+          - status
+          - deployment/cilium-operator
+          - --timeout={{ cilium_rollout_timeout }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Restart the agents
+      ansible.builtin.command:
+        argv: [kubectl, -n, "{{ cilium_namespace }}", rollout, restart, daemonset/cilium]
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: true
+
+    - name: Wait for the agents to finish rolling out
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - -n
+          - "{{ cilium_namespace }}"
+          - rollout
+          - status
+          - daemonset/cilium
+          - --timeout={{ cilium_rollout_timeout }}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
 
 - name: Assert no helm release secret was created
   # Контроль того, что установка действительно шла через helm template:

@@ -24,6 +24,11 @@ cilium_field_manager: "{{ argocd.field_manager }}"
 cilium_status_retries: 40
 cilium_status_delay: 15
 
+# Ожидание перезапуска после изменения cilium-config. Агент при старте ждёт
+# нужные ему CRD до пяти минут и только затем завершается с fatal, поэтому
+# таймаут заведомо больше: иначе роль сдастся раньше, чем станет ясен исход.
+cilium_rollout_timeout: "10m"
+
 # Ключ GitOps deploy key в секрет-бэкенде
 cilium_deploy_key_secret_key: gitops-deploy-key
 
