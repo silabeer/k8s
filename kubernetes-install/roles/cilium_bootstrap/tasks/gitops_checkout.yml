@@ -55,3 +55,35 @@
   ansible.builtin.set_fact:
     cilium_values_path: "{{ cilium_checkout_dir }}/{{ gitops.cluster_path }}/{{ cilium_values_relative_path }}"
     cilium_values_revision: "{{ cilium_gitops_clone.after | default('unknown') }}"
+
+# =============================================================================
+# Согласованность values с адресом кластера
+#
+# k8sServiceHost задаёт адрес apiserver, по которому агенты Cilium ходят при
+# kubeProxyReplacement. Он живёт в GitOps-репозитории, а адрес кластера — в
+# инвентаре Ansible, и связи между ними нет никакой.
+#
+# Наблюдалось вживую: values достались от прежнего стенда, и агенты 11 минут
+# стучались в адрес погашенной машины. Диагностика обманчива — образ
+# скачался, под создан, kubectl logs не работает (serving-сертификат kubelet
+# ещё не подписан), а в событиях только BackOff без причины.
+# =============================================================================
+- name: Read the Cilium values
+  ansible.builtin.slurp:
+    src: "{{ cilium_values_path }}"
+  register: cilium_values_content
+
+- name: Assert the API address in values matches this cluster
+  ansible.builtin.assert:
+    that:
+      - cilium_values_parsed.k8sServiceHost | default(cilium_expected_api_host)
+        == cilium_expected_api_host
+    fail_msg: >-
+      В values задан k8sServiceHost={{ cilium_values_parsed.k8sServiceHost }},
+      а apiserver этого кластера — {{ cilium_expected_api_host }}. С чужим
+      адресом агенты Cilium не поднимутся: они будут ждать ответа от машины,
+      которой в этом контуре нет.
+    quiet: true
+  vars:
+    cilium_values_parsed: "{{ cilium_values_content.content | b64decode | from_yaml }}"
+    cilium_expected_api_host: "{{ api_vip | default(control_plane_endpoint_host) }}"
