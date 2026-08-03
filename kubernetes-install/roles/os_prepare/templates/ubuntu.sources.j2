@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+#
+# Источники пакетов ОС переведены на реестр контура.
+#
+# Формат deb822 — начиная с Ubuntu 24.04 штатный. Signed-By оставлен
+# прежним: реестр отдаёт Release и InRelease БАЙТ В БАЙТ, поэтому подпись
+# архива Ubuntu остаётся действительной и проверяется тем же ключом.
+# Именно поэтому проксирование безопаснее собственного зеркала: подменить
+# содержимое незаметно нельзя, apt отвергнет его по подписи.
+Types: deb
+URIs: {{ os_apt_mirror_url }}
+Suites: {{ ansible_distribution_release }} {{ ansible_distribution_release }}-updates {{ ansible_distribution_release }}-backports
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: {{ os_apt_security_url }}
+Suites: {{ ansible_distribution_release }}-security
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg

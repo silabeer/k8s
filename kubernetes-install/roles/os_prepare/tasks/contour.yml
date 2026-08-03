@@ -52,3 +52,37 @@
     cmd: update-ca-certificates
   when: os_prepare_ca.changed | default(false)
   changed_when: true
+
+# =============================================================================
+# Источники пакетов операционной системы
+#
+# Без этого шага контур не закрыт: apt на узлах ходит в интернет напрямую
+# при каждом обновлении и при установке любого базового пакета. Дыра тихая —
+# кластер работает, установка проходит, и заметно это только на площадке,
+# где интернета действительно нет.
+#
+# Перенаправление сделано ЗДЕСЬ, а не в основных задачах роли, потому что
+# нужно до первого `apt update`: он выполняется этой же ролью строкой ниже.
+# =============================================================================
+- name: Point the OS package sources at the contour mirror
+  ansible.builtin.template:
+    src: ubuntu.sources.j2
+    dest: /etc/apt/sources.list.d/ubuntu.sources
+    owner: root
+    group: root
+    mode: "0644"
+    # Проверять нечем: apt не умеет валидировать файл источников отдельно.
+    # Ошибка проявится на следующем apt update, поэтому он идёт сразу.
+    backup: true
+  when:
+    - os_apt_mirror_url | default('') | length > 0
+    - ansible_distribution == 'Ubuntu'
+  register: os_prepare_sources
+
+# Как и обновление хранилища сертификатов выше — задача, а не обработчик:
+# индекс нужен ДО установки базовых пакетов, которая идёт следом в этой же
+# роли, а обработчик сработал бы только в конце play.
+- name: Refresh the package index from the contour mirror  # noqa: no-handler
+  ansible.builtin.apt:
+    update_cache: true
+  when: os_prepare_sources.changed | default(false)

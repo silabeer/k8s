@@ -86,6 +86,17 @@ artifact_keeper_repositories:
   - {key: proxy-helm-csr, format: helm, type: remote, upstream: "https://postfinance.github.io/kubelet-csr-approver"}
   - {key: binaries, format: generic, type: local}
 
+  # Пакеты операционной системы. Без них контур не закрыт: apt на узлах
+  # ходил бы в интернет напрямую при каждом обновлении. Раскладка у архива
+  # Ubuntu стандартная (dists/ + pool/), поэтому он проксируется как есть —
+  # в отличие от плоского репозитория Kubernetes.
+  #
+  # Обновления безопасности лежат на ОТДЕЛЬНОМ хосте и требуют отдельного
+  # репозитория: указать один archive.ubuntu.com недостаточно, и забытый
+  # security означает узлы без исправлений уязвимостей.
+  - {key: proxy-ubuntu-archive, format: debian, type: remote, upstream: "http://archive.ubuntu.com/ubuntu"}
+  - {key: proxy-ubuntu-security, format: debian, type: remote, upstream: "http://security.ubuntu.com/ubuntu"}
+
 # -----------------------------------------------------------------------------
 # Что загружается в локальный репозиторий
 #
