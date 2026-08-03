@@ -1,0 +1,19 @@
+---
+# Предусловия закрытого контура: разрешение имён его служб и доверие к их
+# центру сертификации.
+#
+# Отдельным playbook и ДО preflight: тот обращается к реестру и
+# секрет-бэкенду по имени и через TLS. Без этих двух вещей проверка падает
+# на разрешении имени, то есть сообщает не о том, что случилось.
+#
+# В контуре с внутренним DNS и публично доверенным сертификатом обе
+# переменные пусты, и playbook ничего не делает.
+- name: Prepare the contour prerequisites
+  hosts: kubernetes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Apply the contour prerequisites
+      ansible.builtin.include_role:
+        name: os_prepare
+        tasks_from: contour.yml

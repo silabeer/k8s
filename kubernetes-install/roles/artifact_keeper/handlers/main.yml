@@ -1,0 +1,6 @@
+---
+- name: Restart artifact keeper
+  ansible.builtin.command:
+    argv: [docker, compose, up, -d]
+    chdir: "{{ artifact_keeper_dir }}"
+  changed_when: true

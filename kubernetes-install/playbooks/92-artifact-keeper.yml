@@ -1,0 +1,12 @@
+---
+# Реестр артефактов контура (Artifact Keeper).
+#
+# Отдельный playbook, а не часть site.yml: реестр — предусловие установки
+# кластера, а не её шаг. Он должен работать ДО того, как узлы впервые
+# попросят образ.
+- name: Deploy and configure the artifact registry
+  hosts: registry
+  become: true
+  gather_facts: true
+  roles:
+    - artifact_keeper

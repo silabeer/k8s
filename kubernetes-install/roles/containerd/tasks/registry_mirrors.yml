@@ -2,6 +2,18 @@
 # В containerd 2.x зеркала задаются ТОЛЬКО через config_path и hosts.toml —
 # секция [plugins.*.registry.mirrors] внутри config.toml удалена (раздел 12).
 
+# Сертификат кладётся ДО рендера hosts.toml: тот на него ссылается, и
+# containerd при перезапуске должен найти файл на месте.
+- name: Install the registry CA certificate
+  ansible.builtin.copy:
+    content: "{{ registry_ca_cert }}"
+    dest: "{{ containerd_registry_ca_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: registry_ca_cert | default('') | length > 0
+  notify: Restart containerd
+
 - name: Create per-registry directories
   ansible.builtin.file:
     path: "{{ containerd_certs_dir }}/{{ item.upstream }}"

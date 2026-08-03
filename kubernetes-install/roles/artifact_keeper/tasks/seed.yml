@@ -1,0 +1,112 @@
+---
+# Загрузка в локальный репозиторий того, что реестр проксировать не умеет.
+#
+# Два случая, оба выяснены проверкой:
+#   * формат generic создаётся, но обработчика отдачи не имеет вовсе —
+#     «No protocol handler for format 'generic'»;
+#   * обработчик debian умеет только раскладку dists/ + pool/, а репозиторий
+#     Kubernetes плоский, в стиле OBS. На archive.ubuntu.com тот же
+#     обработчик работает — значит дело в раскладке, а не в нём.
+#
+# Скачивание идёт НА САМ РЕЕСТР: он единственный в контуре имеет выход в
+# интернет, и тянуть через управляющую машину значило бы гонять файлы дважды.
+
+- name: Build the list of artifacts to seed
+  ansible.builtin.set_fact:
+    artifact_keeper_seed_list: >-
+      {{ artifact_keeper_seed_binaries
+         + (artifact_keeper_apt_pairs if artifact_keeper_seed_apt | bool else []) }}
+  vars:
+    # Пути внутри зеркала повторяют пути в upstream: apt дописывает их к
+    # базовому адресу сам, и любое переименование сломало бы разрешение
+    # файлов из Packages.
+    artifact_keeper_apt_paths: >-
+      {{ artifact_keeper_apt_index_files
+         + ((artifact_keeper_apt_packages + artifact_keeper_apt_extra_packages)
+            | map('regex_replace', '^(.*)$', 'amd64/\1') | list) }}
+    artifact_keeper_apt_pairs: >-
+      {{ artifact_keeper_apt_paths
+         | map('regex_replace', '^(.*)$',
+               '{"src": "' ~ artifact_keeper_apt_upstream ~ '/\1",
+                 "dest": "' ~ artifact_keeper_apt_prefix ~ '/\1"}')
+         | map('from_json') | list }}
+
+- name: Create a staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: ak-seed
+  register: artifact_keeper_stage
+
+- name: Seed the local repository
+  block:
+    - name: Download the artifacts
+      ansible.builtin.get_url:
+        url: "{{ item.src }}"
+        dest: "{{ artifact_keeper_stage.path }}/{{ item.dest | basename }}"
+        mode: "0644"
+      loop: "{{ artifact_keeper_seed_list }}"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Compute the checksums of the downloaded files
+      ansible.builtin.stat:
+        path: "{{ artifact_keeper_stage.path }}/{{ item.dest | basename }}"
+        checksum_algorithm: sha256
+      register: artifact_keeper_local
+      loop: "{{ artifact_keeper_seed_list }}"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    # PUT не перезаписывает: на существующий путь отвечает 409 Conflict.
+    # Поэтому состояние сверяется явно — иначе повторный прогон роли падал
+    # бы на всех уже загруженных файлах.
+    - name: Read what the registry already holds
+      ansible.builtin.uri:
+        url: "{{ artifact_keeper_api }}/repositories/{{ artifact_keeper_binaries_repo }}/artifacts/{{ item.dest }}"
+        headers:
+          Authorization: "Bearer {{ artifact_keeper_token }}"
+        status_code: [200, 404]
+      register: artifact_keeper_remote
+      loop: "{{ artifact_keeper_seed_list }}"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Remove artifacts whose content changed
+      # Совпавшее по контрольной сумме не трогается: перезалив тех же байтов
+      # давал бы ложное «changed» в каждом прогоне.
+      ansible.builtin.uri:
+        url: "{{ artifact_keeper_api }}/repositories/{{ artifact_keeper_binaries_repo }}/artifacts/{{ item.0.dest }}"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ artifact_keeper_token }}"
+        status_code: [200, 204, 404]
+      loop: "{{ artifact_keeper_seed_list | zip(artifact_keeper_remote.results, artifact_keeper_local.results) | list }}"
+      loop_control:
+        label: "{{ item.0.dest }}"
+      when:
+        - item.1.status == 200
+        - item.1.json.checksum_sha256 != item.2.stat.checksum
+      changed_when: true
+
+    - name: Upload the artifacts
+      ansible.builtin.uri:
+        url: "{{ artifact_keeper_api }}/repositories/{{ artifact_keeper_binaries_repo }}/artifacts/{{ item.0.dest }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ artifact_keeper_token }}"
+        src: "{{ artifact_keeper_stage.path }}/{{ item.0.dest | basename }}"
+        remote_src: true
+        status_code: [200, 201]
+      loop: "{{ artifact_keeper_seed_list | zip(artifact_keeper_remote.results, artifact_keeper_local.results) | list }}"
+      loop_control:
+        label: "{{ item.0.dest }}"
+      when: >-
+        item.1.status != 200
+        or item.1.json.checksum_sha256 != item.2.stat.checksum
+      changed_when: true
+
+  always:
+    - name: Remove the staging directory
+      ansible.builtin.file:
+        path: "{{ artifact_keeper_stage.path }}"
+        state: absent

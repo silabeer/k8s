@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: artifact_keeper
+  author: platform
+  description: >-
+    Реестр артефактов контура Artifact Keeper: развёртывание через docker
+    compose с закреплением образов по digest, декларативная настройка
+    репозиториев через API, загрузка того, что реестр проксировать не умеет.
+  license: proprietary
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
+dependencies: []

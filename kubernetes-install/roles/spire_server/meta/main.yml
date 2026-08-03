@@ -1,7 +1,15 @@
 ---
 galaxy_info:
   role_name: spire_server
-  description: SPIRE server — выдача идентичностей SPIFFE рабочим нагрузкам
+  author: platform
+  description: >-
+    Сервер SPIRE: выдача идентичностей SPIFFE рабочим нагрузкам кластеров.
   license: proprietary
-  min_ansible_version: "2.15"
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+
 dependencies: []

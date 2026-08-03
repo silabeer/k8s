@@ -1,0 +1,17 @@
+---
+# Версии артефактов, которые реестр обязан отдавать. Обязаны совпадать с
+# инвентарём кластера: иначе установка попросит из реестра то, чего в нём
+# нет, и отказ будет выглядеть как ошибка сети.
+kubernetes_version: "1.34.10"
+kubernetes_minor_version: "{{ kubernetes_version | regex_replace('^(\\d+\\.\\d+).*$', '\\1') }}"
+containerd_version: "2.3.3"
+runc_version: "1.5.1"
+cni_plugins_version: "1.9.1"
+helm_version: "3.21.3"
+
+# Зависимости kubeadm и kubelet. Версии у них свои, не совпадающие с
+# версией Kubernetes, поэтому перечислены отдельно: без них apt не
+# установит и сами пакеты.
+artifact_keeper_apt_extra_packages:
+  - "cri-tools_1.34.0-1.1_amd64.deb"
+  - "kubernetes-cni_1.7.1-1.1_amd64.deb"

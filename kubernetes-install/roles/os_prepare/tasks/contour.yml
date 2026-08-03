@@ -1,0 +1,54 @@
+---
+# Предусловия контура: разрешение имён его служб и доверие к их центру
+# сертификации.
+#
+# Вынесено отдельным файлом, потому что нужно РАНЬШЕ preflight: тот
+# проверяет доступность реестра и секрет-бэкенда по имени и через TLS, а
+# без этих двух вещей проверка падает не по существу, а на разрешении
+# имени. Подключается и из main.yml роли, и напрямую из
+# playbooks/01-contour-prerequisites.yml.
+
+# Хосты контура, не входящие в кластер: реестр, секрет-бэкенд, Git. В
+# контуре с внутренним DNS список остаётся пустым и задача ничего не делает.
+# Она нужна там, где DNS этих имён не знает, а обращаться по адресу нельзя:
+# сертификат реестра выписан на имя, и запрос по IP не проходит проверку —
+# клиент к тому же не отправляет SNI, и сервер отвечает внутренней ошибкой TLS.
+- name: Manage /etc/hosts entries for contour services
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED: contour services"
+    block: |
+      {% for entry in extra_hosts_entries %}
+      {{ entry.ip }} {{ entry.names | join(' ') }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+    unsafe_writes: "{{ os_prepare_hosts_unsafe_writes | bool }}"
+  when:
+    - os_prepare_manage_hosts | bool
+    - extra_hosts_entries | length > 0
+
+# Сертификат центра, выпустившего сертификат реестра, — в СИСТЕМНОЕ
+# хранилище. Роль containerd кладёт его отдельно для себя, но этого мало:
+# helm тянет чарты, get_url — бинарники и пакеты, и оба проверяют цепочку
+# через системное хранилище. Без этого установка падает на первом же
+# обращении к реестру с невнятной ошибкой проверки сертификата.
+- name: Install the contour CA certificate
+  ansible.builtin.copy:
+    content: "{{ registry_ca_cert }}"
+    dest: /usr/local/share/ca-certificates/contour-registry.crt
+    owner: root
+    group: root
+    mode: "0644"
+  when: registry_ca_cert | default('') | length > 0
+  register: os_prepare_ca
+
+# Намеренно задача, а не обработчик (no-handler отключён осознанно):
+# обработчик сработал бы в конце play, а доверие к CA нужно ДО следующих
+# задач — apt и get_url обращаются к реестру уже в этом же прогоне.
+- name: Refresh the system trust store  # noqa: no-handler
+  ansible.builtin.command:
+    cmd: update-ca-certificates
+  when: os_prepare_ca.changed | default(false)
+  changed_when: true

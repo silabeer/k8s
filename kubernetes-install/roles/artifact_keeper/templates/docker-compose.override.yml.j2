@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+#
+# Закрепление образов по digest. Upstream публикует только latest и
+# sha-<коммит> — версионных тегов нет, и «та же версия» по тегу не
+# воспроизводится.
+services:
+  backend:
+    image: ghcr.io/artifact-keeper/artifact-keeper-backend@{{ artifact_keeper_backend_digest }}
+  web:
+    image: ghcr.io/artifact-keeper/artifact-keeper-web@{{ artifact_keeper_web_digest }}
+  openscap:
+    image: ghcr.io/artifact-keeper/artifact-keeper-openscap@{{ artifact_keeper_openscap_digest }}

@@ -120,7 +120,7 @@
         cmd: "bao operator unseal {{ item }}"
       environment: "{{ openbao_cli_env }}"
       loop: >-
-        {{ (openbao_init_saved.content | b64decode | from_json).unseal_keys_b64[:openbao_key_threshold | int] }}
+        {{ (openbao_init_saved.content | b64decode | from_json).unseal_keys_b64[: openbao_key_threshold | int] }}
       loop_control:
         label: "ключ {{ ansible_loop.index }} из {{ openbao_key_threshold }}"
         extended: true

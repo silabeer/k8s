@@ -1,0 +1,128 @@
+---
+# Artifact Keeper — реестр артефактов контура.
+#
+# Роль поднимает реестр и настраивает его так, чтобы установка кластера не
+# ходила в интернет напрямую. Всё, что было сделано руками при первом
+# развёртывании, закодировано здесь: иначе гашение ВМ означало бы потерю
+# конфигурации, а следующий стенд собирался бы заново по памяти.
+#
+# Реестр — единственная система контура, которой интернет НУЖЕН: proxy-режим
+# означает, что при первом запросе она сама ходит в upstream и кеширует.
+# Замкнуть её на себя невозможно, и это не недостаток конфигурации.
+
+# -----------------------------------------------------------------------------
+# Версия
+#
+# Upstream публикует только теги latest и sha-<коммит>; версионных тегов нет,
+# поэтому «поставить ту же версию через полгода» по тегу невозможно. Образы
+# закрепляются по digest. Значения снимаются командой:
+#
+#   crane digest ghcr.io/artifact-keeper/artifact-keeper-backend:latest
+#
+# Файлы compose взяты из тега v1.7.0 и лежат в files/ роли — по той же
+# причине, по которой в GitOps-репозитории лежат CRD Gateway API: ссылка на
+# ветку через полгода даёт другое содержимое.
+# -----------------------------------------------------------------------------
+artifact_keeper_version: "v1.7.0"
+artifact_keeper_backend_digest: "sha256:0f73b18c0c4a9b431474dd9ab93aa7a05eaeb9392bd0b82873133a2f2654fda5"
+artifact_keeper_web_digest: "sha256:a1912b69a5d88528147ce1531223f75c3536ccb4bf822cd6ed70884c283dbef7"
+artifact_keeper_openscap_digest: "sha256:6a89fa7c120d5a8e0007ca04f7801c81ea637fa49c2c97b622bd775f302aba2c"
+
+artifact_keeper_dir: /opt/artifact-keeper
+artifact_keeper_http_port: 30080
+artifact_keeper_https_port: 30443
+
+# Имя, по которому к реестру обращаются клиенты.
+#
+# ИМЯ, А НЕ АДРЕС. Caddy определяет сайт по SNI, а клиент, обращающийся к
+# IP-адресу, SNI не отправляет — рукопожатие завершается «internal error»,
+# и отказ выглядит как поломка TLS, а не как ошибка конфигурации.
+artifact_keeper_site_address: "registry.stand.local"
+
+# Учётные данные администратора. В production берутся из секрет-бэкенда;
+# автогенерация с последующим вычитыванием файла из контейнера неудобна тем,
+# что пароль негде взять до первого запуска.
+artifact_keeper_admin_user: admin
+artifact_keeper_admin_password: ~
+
+# Секреты приложения. Значение JWT_SECRET по умолчанию в upstream —
+# «change-me-in-production-please», ровно 30 символов при минимуме 32,
+# поэтому стек с ним не стартует вовсе.
+artifact_keeper_jwt_secret: ~
+artifact_keeper_webhook_secret: ~
+artifact_keeper_peer_api_key: ~
+
+# Анонимная загрузка. Нужна обязательно: kubelet и kubeadm тянут образы
+# через CRI, где учётных данных нет, а containerd 2.x аутентификацию в
+# hosts.toml не поддерживает.
+artifact_keeper_allow_anonymous_download: true
+
+# -----------------------------------------------------------------------------
+# Репозитории
+#
+# format  — docker | helm | debian | rpm | generic и прочие
+# type    — remote (проксирует upstream) | local (хранит своё) | virtual
+#
+# Два ограничения, найденные проверкой и отражённые в этом списке:
+#
+#   * generic принимается при создании, но обработчика ОТДАЧИ не имеет:
+#     «No protocol handler for format 'generic'». Проксировать произвольные
+#     бинарники нельзя, их приходится загружать в локальный репозиторий.
+#
+#   * debian умеет только классическую раскладку dists/ + pool/. Репозиторий
+#     Kubernetes — плоский, в стиле OBS, поэтому проксируется НЕ он, а его
+#     зеркало в локальном репозитории. Проверено: на archive.ubuntu.com тот
+#     же обработчик работает, значит дело в раскладке, а не в нём.
+# -----------------------------------------------------------------------------
+artifact_keeper_repositories:
+  - {key: proxy-registry-k8s-io, format: docker, type: remote, upstream: "https://registry.k8s.io"}
+  - {key: proxy-quay-io, format: docker, type: remote, upstream: "https://quay.io"}
+  - {key: proxy-ghcr-io, format: docker, type: remote, upstream: "https://ghcr.io"}
+  - {key: proxy-docker-io, format: docker, type: remote, upstream: "https://registry-1.docker.io"}
+  - {key: proxy-helm-cilium, format: helm, type: remote, upstream: "https://helm.cilium.io"}
+  - {key: proxy-helm-argo, format: helm, type: remote, upstream: "https://argoproj.github.io/argo-helm"}
+  - {key: proxy-helm-jetstack, format: helm, type: remote, upstream: "https://charts.jetstack.io"}
+  - {key: proxy-helm-metrics, format: helm, type: remote, upstream: "https://kubernetes-sigs.github.io/metrics-server"}
+  - {key: proxy-helm-csr, format: helm, type: remote, upstream: "https://postfinance.github.io/kubelet-csr-approver"}
+  - {key: binaries, format: generic, type: local}
+
+# -----------------------------------------------------------------------------
+# Что загружается в локальный репозиторий
+#
+# Версии совпадают с теми, что заданы в инвентаре кластера. Расхождение
+# означало бы, что установка тянет из реестра не то, что просит.
+# -----------------------------------------------------------------------------
+artifact_keeper_binaries_repo: binaries
+
+artifact_keeper_seed_binaries:
+  - {src: "https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz",
+     dest: "containerd-{{ containerd_version }}-linux-amd64.tar.gz"}
+  - {src: "https://github.com/opencontainers/runc/releases/download/v{{ runc_version }}/runc.amd64",
+     dest: "runc.amd64"}
+  - {src: "https://github.com/containernetworking/plugins/releases/download/v{{ cni_plugins_version }}/cni-plugins-linux-amd64-v{{ cni_plugins_version }}.tgz",
+     dest: "cni-plugins-linux-amd64-v{{ cni_plugins_version }}.tgz"}
+  - {src: "https://get.helm.sh/helm-v{{ helm_version }}-linux-amd64.tar.gz",
+     dest: "helm-v{{ helm_version }}-linux-amd64.tar.gz"}
+
+# Зеркало плоского apt-репозитория Kubernetes.
+#
+# Файлы индексов копируются БЕЗ ИЗМЕНЕНИЙ: Release содержит контрольные
+# суммы Packages, а InRelease подписан. Любая правка — и apt отвергнет
+# репозиторий, причём сообщение будет про подпись, а не про правку.
+artifact_keeper_seed_apt: true
+artifact_keeper_apt_upstream: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor_version }}/deb"
+artifact_keeper_apt_prefix: "k8s-deb"
+artifact_keeper_apt_index_files: [Release, InRelease, Release.key, Packages, Packages.gz]
+
+# Пакеты, попадающие в зеркало. Список закрыт намеренно: репозиторий
+# Kubernetes содержит все патч-версии ветки под четыре архитектуры, и
+# зеркалировать его целиком — десятки гигабайт ради пяти файлов.
+artifact_keeper_apt_packages:
+  - "kubeadm_{{ kubernetes_version }}-{{ kubernetes_package_revision }}_amd64.deb"
+  - "kubelet_{{ kubernetes_version }}-{{ kubernetes_package_revision }}_amd64.deb"
+  - "kubectl_{{ kubernetes_version }}-{{ kubernetes_package_revision }}_amd64.deb"
+artifact_keeper_apt_extra_packages: []
+kubernetes_package_revision: "1.1"
+
+artifact_keeper_manage_docker: true
+artifact_keeper_prune_repositories: false

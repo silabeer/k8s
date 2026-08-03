@@ -10,6 +10,12 @@ server = "https://{{ item.upstream }}"
 {% if item.skip_verify | default(false) %}
   skip_verify = true
 {% endif %}
-{% if item.ca | default(false) %}
-  ca = "{{ item.ca }}"
+{# Путь к CA берётся из зеркала, а при отсутствии — из общего
+   registry_ca_cert: перечислять один и тот же путь в каждом зеркале
+   означало бы четыре места, где его можно забыть поправить. #}
+{% set ca_path = item.ca | default(containerd_registry_ca_path
+                                   if (registry_ca_cert | default('') | length > 0)
+                                   else '', true) %}
+{% if ca_path %}
+  ca = "{{ ca_path }}"
 {% endif %}

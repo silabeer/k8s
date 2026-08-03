@@ -78,3 +78,37 @@ preflight_ntp_max_offset: "{{ ntp_max_offset_seconds | default(1) }}"
 # провижнера, узлы соседних систем, — у которых нет node_ip, и проверка
 # падала бы на них с невнятной ошибкой.
 cluster_hosts: "{{ (groups['kubernetes'] | default([])) + (groups['load_balancers'] | default([])) }}"
+
+# -----------------------------------------------------------------------------
+# Закрытый контур
+#
+# closed_contour: true означает, что артефакты берутся только из реестра и
+# внутренних зеркал. Включает проверку источников — см.
+# tasks/check_artifact_sources.yml.
+# -----------------------------------------------------------------------------
+closed_contour: false
+
+# Хосты, попадание на которые считается выходом в интернет. Список
+# намеренно перечисляет то, что встречается в умолчаниях ролей этого
+# проекта: проверка должна ловить именно забытое переопределение.
+closed_contour_public_hosts:
+  - github.com
+  - raw.githubusercontent.com
+  - objects.githubusercontent.com
+  - get.helm.sh
+  - pkgs.k8s.io
+  - registry.k8s.io
+  - quay.io
+  - ghcr.io
+  - docker.io
+  - registry-1.docker.io
+  - gcr.io
+  - k8s.gcr.io
+  - helm.cilium.io
+  - charts.jetstack.io
+  - argoproj.github.io
+  - kubernetes-sigs.github.io
+  - postfinance.github.io
+
+# Необязательный белый список. Пустой — подойдёт любой непубличный адрес.
+closed_contour_allowed_hosts: []

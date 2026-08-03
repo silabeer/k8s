@@ -21,6 +21,9 @@
     unsafe_writes: "{{ os_prepare_hosts_unsafe_writes | bool }}"
   when: os_prepare_manage_hosts | bool
 
+- name: Apply the contour prerequisites
+  ansible.builtin.import_tasks: contour.yml
+
 - name: Install base packages
   ansible.builtin.apt:
     name: "{{ os_prepare_base_packages }}"

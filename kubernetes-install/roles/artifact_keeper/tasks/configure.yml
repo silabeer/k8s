@@ -1,0 +1,136 @@
+---
+# Приведение реестра к состоянию, описанному в artifact_keeper_repositories.
+#
+# Управление декларативное: список в переменной — источник правды, задачи
+# лишь устраняют расхождения. Поэтому здесь есть и создание недостающих, и
+# правка разошедшихся, и удаление лишних — без последнего «декларативность»
+# сводилась бы к «создать один раз и больше не трогать».
+
+- name: Log in to the registry API
+  ansible.builtin.uri:
+    # Путь именно такой. В документации указан /auth/login — он отвечает
+    # 401 «Authentication required», и по сообщению не догадаться, что дело
+    # в версии пути, а не в пароле.
+    url: "http://127.0.0.1:{{ artifact_keeper_http_port }}/api/v1/auth/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ artifact_keeper_admin_user }}"
+      password: "{{ artifact_keeper_admin_password }}"
+    status_code: 200
+  register: artifact_keeper_login
+  no_log: true
+
+- name: Remember the access token
+  ansible.builtin.set_fact:
+    artifact_keeper_token: "{{ artifact_keeper_login.json.access_token }}"
+    artifact_keeper_api: "http://127.0.0.1:{{ artifact_keeper_http_port }}/api/v1"
+  no_log: true
+
+# -----------------------------------------------------------------------------
+# Настройки
+# -----------------------------------------------------------------------------
+- name: Read the current settings
+  ansible.builtin.uri:
+    url: "{{ artifact_keeper_api }}/admin/settings"
+    headers:
+      Authorization: "Bearer {{ artifact_keeper_token }}"
+  register: artifact_keeper_settings
+
+- name: Apply the settings
+  # POST с ПОЛНЫМ объектом. PATCH и PUT отвечают 405, а POST с одним полем —
+  # 422 «missing field storage_backend»: частичное обновление не
+  # поддерживается вовсе.
+  ansible.builtin.uri:
+    url: "{{ artifact_keeper_api }}/admin/settings"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ artifact_keeper_token }}"
+    body_format: json
+    body: >-
+      {{ artifact_keeper_settings.json
+         | combine({'allow_anonymous_download': artifact_keeper_allow_anonymous_download | bool}) }}
+    status_code: 200
+  when: >-
+    artifact_keeper_settings.json.allow_anonymous_download
+    != (artifact_keeper_allow_anonymous_download | bool)
+  changed_when: true
+
+# -----------------------------------------------------------------------------
+# Репозитории
+# -----------------------------------------------------------------------------
+- name: Read the existing repositories
+  ansible.builtin.uri:
+    url: "{{ artifact_keeper_api }}/repositories?per_page=100"
+    headers:
+      Authorization: "Bearer {{ artifact_keeper_token }}"
+  register: artifact_keeper_existing
+
+- name: Index the existing repositories by key
+  ansible.builtin.set_fact:
+    artifact_keeper_existing_map: >-
+      {{ dict(artifact_keeper_existing.json['items']
+              | map(attribute='key') | zip(artifact_keeper_existing.json['items'])) }}
+
+- name: Create the missing repositories
+  ansible.builtin.uri:
+    url: "{{ artifact_keeper_api }}/repositories"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ artifact_keeper_token }}"
+    body_format: json
+    body: >-
+      {{ {'key': item.key, 'name': item.key, 'format': item.format,
+          'repo_type': item.type, 'is_public': true,
+          'allow_anonymous_access': true}
+         | combine({'upstream_url': item.upstream} if item.upstream is defined else {}) }}
+    status_code: [200, 201]
+  loop: "{{ artifact_keeper_repositories }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.key not in artifact_keeper_existing_map
+  changed_when: true
+
+- name: Report repositories whose upstream drifted
+  # Правка выполняется не молча: смена upstream у работающего репозитория
+  # меняет источник артефактов, и это решение оператора, а не роли.
+  ansible.builtin.debug:
+    msg: >-
+      Репозиторий {{ item.key }} существует, но его upstream
+      ({{ artifact_keeper_existing_map[item.key].upstream_url }})
+      отличается от заданного ({{ item.upstream }}). Роль его НЕ меняет:
+      смена источника у наполненного репозитория означает, что часть
+      артефактов останется от прежнего upstream. Исправьте вручную или
+      удалите репозиторий.
+  loop: "{{ artifact_keeper_repositories }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.key in artifact_keeper_existing_map
+    - item.upstream is defined
+    - artifact_keeper_existing_map[item.key].upstream_url != item.upstream
+
+- name: Remove repositories not declared in the inventory
+  # Выключено по умолчанию: удаление репозитория уносит и его содержимое, а
+  # в реестре может лежать то, что положили не этой ролью.
+  ansible.builtin.uri:
+    url: "{{ artifact_keeper_api }}/repositories/{{ item }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ artifact_keeper_token }}"
+    status_code: [200, 204]
+  loop: "{{ artifact_keeper_existing_map.keys() | list }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - artifact_keeper_prune_repositories | bool
+    - item not in (artifact_keeper_repositories | map(attribute='key') | list)
+  changed_when: true
+
+- name: Report the resulting state
+  ansible.builtin.debug:
+    msg: >-
+      Объявлено репозиториев: {{ artifact_keeper_repositories | length }},
+      было в реестре: {{ artifact_keeper_existing_map | length }}.
+      Удаление лишних
+      {{ 'включено' if artifact_keeper_prune_repositories | bool else 'выключено (artifact_keeper_prune_repositories)' }}.

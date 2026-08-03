@@ -57,3 +57,13 @@ os_prepare_firewall_extra_ports: []
 # провижнера, узлы соседних систем, — у которых нет node_ip, и проверка
 # падала бы на них с невнятной ошибкой.
 cluster_hosts: "{{ (groups['kubernetes'] | default([])) + (groups['load_balancers'] | default([])) }}"
+
+# Хосты контура, которых может не быть во внутреннем DNS. Формат:
+#   extra_hosts_entries:
+#     - ip: 10.129.0.6
+#       names: [registry.stand.local]
+extra_hosts_entries: []
+
+# Сертификат центра реестра контура. Задаётся в инвентаре вместе с
+# registry_mirrors; пустое значение означает публично доверенный сертификат.
+registry_ca_cert: ~

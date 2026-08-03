@@ -19,6 +19,10 @@
   ansible.builtin.import_tasks: check_network.yml
   tags: [preflight, preflight_network]
 
+- name: Check artifact sources stay inside the contour
+  ansible.builtin.import_tasks: check_artifact_sources.yml
+  when: closed_contour | bool
+
 - name: Check external endpoints
   ansible.builtin.import_tasks: check_endpoints.yml
   tags: [preflight, preflight_endpoints]

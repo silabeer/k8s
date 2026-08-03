@@ -55,6 +55,10 @@
         openbao_existing_san.rc != 0 or
         (openbao_tls_san_ip | reject('equalto', '127.0.0.1') | list
          | reject('in', openbao_existing_san.stdout) | list | length > 0)
+      # Задача выполняется только по условию выше, то есть её запуск и
+      # означает перевыпуск. Без этого линтер справедливо указывает, что
+      # command не сообщает об изменении.
+      changed_when: true
       notify: Restart openbao
 
 - name: Set permissions on the TLS material

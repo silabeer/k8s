@@ -8,6 +8,9 @@
 # умолчанию — CronJob из GitOps (раздел 28), роль etcd_backup применяется
 # только в контурах, где hostPath запрещён.
 
+- name: Stage 01 — contour prerequisites
+  import_playbook: 01-contour-prerequisites.yml
+
 - name: Stage 00 — preflight checks
   import_playbook: 00-preflight.yml
 

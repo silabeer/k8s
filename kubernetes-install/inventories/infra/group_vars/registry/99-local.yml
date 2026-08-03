@@ -1,0 +1,6 @@
+---
+# Секреты стенда. В production берутся из секрет-бэкенда.
+artifact_keeper_admin_password: "6M57InBQmSVlWNHx1rMiiBdw"
+artifact_keeper_jwt_secret: "1gDQTjhezEvONjIIZe3dCUeuuocXHmvC67NYMcqB+muASzzJe1ego4Na0K45pkXg"
+artifact_keeper_webhook_secret: "b4oFl0IxrXAEKX7U/gepo1fKbFlJN8kZE9ZynAZLh9k="
+artifact_keeper_peer_api_key: "nR5mlarKukCfjuf83AX53Ct+N5CZeOUlA4Q8wif5JBQ="

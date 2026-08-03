@@ -2,6 +2,9 @@
 profile: production
 
 exclude_paths:
+  # Файлы upstream, скопированные без изменений: править их нельзя,
+  # иначе теряется смысл фиксации версии.
+  - roles/artifact_keeper/files/
   - collections/
   - .ansible_facts/
   # Файлы секретов и справочные YAML — не playbook, линтер пытается разобрать

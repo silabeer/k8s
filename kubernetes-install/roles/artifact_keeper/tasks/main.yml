@@ -1,0 +1,126 @@
+---
+- name: Assert the required secrets are provided
+  ansible.builtin.assert:
+    that:
+      - artifact_keeper_admin_password | default('') | length >= 12
+      - artifact_keeper_jwt_secret | default('') | length >= 32
+    fail_msg: >-
+      Задайте artifact_keeper_admin_password (от 12 символов) и
+      artifact_keeper_jwt_secret (от 32 символов). Второе — требование
+      самого приложения: значение по умолчанию в upstream короче минимума,
+      и backend с ним не стартует, повторяя «JWT_SECRET is unsuitable».
+    quiet: true
+
+- name: Install Docker
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose-v2]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: artifact_keeper_manage_docker | bool
+
+- name: Ensure Docker is running
+  ansible.builtin.systemd:
+    name: docker
+    enabled: true
+    state: started
+  when: artifact_keeper_manage_docker | bool
+
+- name: Create the deployment directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ artifact_keeper_dir }}"
+    - "{{ artifact_keeper_dir }}/docker"
+
+# Файлы compose лежат в роли, а не скачиваются с raw.githubusercontent:
+# ссылка на ветку через полгода отдаёт другое содержимое, и «развернуть тот
+# же реестр» перестаёт что-либо значить.
+- name: Install the compose files
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ artifact_keeper_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - docker-compose.yml
+    - docker/Caddyfile
+    - docker/init-db.sql
+    - docker/init-pg-ssl.sh
+    - docker/init-dtrack.sh
+  notify: Restart artifact keeper
+
+- name: Render the environment file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ artifact_keeper_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart artifact keeper
+
+- name: Pin the images by digest
+  ansible.builtin.template:
+    src: docker-compose.override.yml.j2
+    dest: "{{ artifact_keeper_dir }}/docker-compose.override.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart artifact keeper
+
+- name: Start the stack
+  ansible.builtin.command:
+    argv: [docker, compose, up, -d]
+    chdir: "{{ artifact_keeper_dir }}"
+  register: artifact_keeper_up
+  # docker compose печатает одинаковый вывод и когда поднимает контейнеры, и
+  # когда убеждается, что они уже подняты; отличить по нему нельзя.
+  changed_when: false
+
+# Обязательно ДО настройки: обработчик сработал бы в конце play, и запросы к
+# API ушли бы в старый экземпляр. Эта ошибка уже стоила разбора в ролях
+# haproxy_keepalived и spire_server.
+- name: Apply pending restarts before configuring
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until the registry is ready
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ artifact_keeper_http_port }}/readyz"
+    status_code: 200
+  register: artifact_keeper_ready
+  retries: 40
+  delay: 10
+  until: artifact_keeper_ready is succeeded
+
+- name: Configure repositories
+  ansible.builtin.import_tasks: configure.yml
+
+- name: Seed the local repository
+  ansible.builtin.import_tasks: seed.yml
+  when: artifact_keeper_seed_binaries | length > 0 or artifact_keeper_seed_apt | bool
+
+- name: Read the root certificate of the registry
+  # Caddy выпускает сертификат собственным центром. Его сертификат нужен
+  # узлам кластера: без него containerd не доверяет зеркалу, и отказ
+  # выглядит как ошибка загрузки образа, а не как проблема доверия.
+  ansible.builtin.command:
+    argv: [docker, exec, artifact-keeper-caddy, cat, /data/caddy/pki/authorities/local/root.crt]
+  register: artifact_keeper_root_ca
+  changed_when: false
+
+- name: Report how to point the cluster at the registry
+  ansible.builtin.debug:
+    msg: >-
+      Реестр {{ artifact_keeper_site_address }} готов:
+      {{ artifact_keeper_repositories | length }} репозиториев.
+      В инвентарь кластера нужно перенести registry_mirrors, адреса
+      артефактов и registry_ca_cert — корневой сертификат прочитан
+      ({{ artifact_keeper_root_ca.stdout_lines | length }} строк) и доступен
+      как artifact_keeper_root_ca.stdout. Имя реестра обязано разрешаться
+      на узлах: либо DNS контура, либо extra_hosts_entries.

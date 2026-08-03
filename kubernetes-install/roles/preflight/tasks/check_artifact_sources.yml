@@ -1,0 +1,103 @@
+---
+# Проверка, что ни один источник артефактов не смотрит в интернет.
+#
+# Зачем отдельная проверка. Источники задаются десятком независимых
+# переменных в разных ролях, и умолчание у каждой — публичный адрес. Забыть
+# переопределить одну из них легко, а последствие не очевидно: в контуре с
+# доступом в интернет установка пройдёт успешно, и расхождение с
+# требованием «только через реестр» вскроется когда-нибудь потом — либо
+# при аудите, либо на площадке, где интернета действительно нет. Это ровно
+# тот класс отказов, который дешевле поймать до установки.
+#
+# Проверка идёт по списку ЗАПРЕЩЁННЫХ хостов, а не разрешённых: список
+# разрешённых пришлось бы выводить из тех же переменных, которые
+# проверяются, и он был бы всегда самосогласован, то есть бесполезен.
+# Дополнительно можно задать closed_contour_allowed_hosts — тогда хост
+# обязан ещё и входить в него.
+
+- name: Collect the artifact sources in use
+  ansible.builtin.set_fact:
+    # Незаданные переменные отбрасываются: часть источников относится к
+    # ролям, которые в этом прогоне не участвуют.
+    preflight_artifact_sources: >-
+      {{ {
+           'kubernetes_apt_repo_url': kubernetes_apt_repo_url | default(''),
+           'containerd_tarball_url': containerd_tarball_url | default(''),
+           'runc_binary_url': runc_binary_url | default(''),
+           'cni_plugins_tarball_url': cni_plugins_tarball_url | default(''),
+           'helm_tarball_url': helm_tarball_url | default(''),
+           'image_repository': 'https://' ~ (image_repository | default('')),
+           'pause_image': 'https://' ~ (pause_image | default('')),
+           'cni.chart': (cni.chart_oci if cni.chart_source | default('repo') == 'oci'
+                         else cni.chart_repo | default('')),
+           'argocd.chart': (argocd.chart_oci if argocd.chart_source | default('repo') == 'oci'
+                            else argocd.chart_repo | default('')),
+         } | dict2items
+         | rejectattr('value', 'equalto', '')
+         | rejectattr('value', 'equalto', 'https://')
+         | list }}
+
+# Имена образов — особый случай. Они МОГУТ указывать на публичный реестр,
+# и это не нарушение: если для этого хоста настроено зеркало в
+# registry_mirrors, containerd перенаправит запрос в реестр контура, а
+# наружу не пойдёт. Более того, переписать имена всех образов невозможно —
+# значительная часть приходит из чартов (Cilium, cert-manager, podinfo).
+#
+# Поэтому проверка требует одного из двух: либо имя ведёт в контур, либо
+# для его хоста есть зеркало. Без этого уточнения проверка запрещала бы
+# ровно тот способ, которым закрытый контур и работает.
+- name: Collect the mirrored upstreams
+  ansible.builtin.set_fact:
+    preflight_mirrored_hosts: >-
+      {{ registry_mirrors | default([]) | map(attribute='upstream') | list }}
+
+- name: Find sources pointing at the public internet
+  ansible.builtin.set_fact:
+    preflight_public_sources: >-
+      {{ preflight_artifact_sources
+         | selectattr('value', 'search',
+             '://(' ~ (closed_contour_public_hosts | map('regex_escape') | join('|')) ~ ')(/|:|$)')
+         | rejectattr('value', 'search',
+             '://(' ~ (preflight_mirrored_hosts | map('regex_escape') | join('|') | default('$^', true)) ~ ')(/|:|$)')
+         | list }}
+
+- name: Assert no artifact source points at the public internet
+  ansible.builtin.assert:
+    that:
+      - preflight_public_sources | length == 0
+    fail_msg: >-
+      closed_contour включён, но эти источники указывают в интернет:
+      {{ preflight_public_sources
+         | map(attribute='key') | join(', ') }}.
+      Значения:
+      {{ preflight_public_sources
+         | map(attribute='value') | join(' | ') }}.
+      Переопределите их на адреса реестра в group_vars инвентаря.
+    quiet: true
+
+# Список разрешённых хостов необязателен: он полезен там, где реестров
+# несколько и важно не перепутать контуры. Пустой список означает «любой
+# непубличный адрес подходит».
+- name: Assert every source belongs to an allowed host
+  ansible.builtin.assert:
+    that:
+      - (item.value | urlsplit('hostname') in closed_contour_allowed_hosts)
+        or (item.value | urlsplit('hostname') in preflight_mirrored_hosts)
+    fail_msg: >-
+      Источник {{ item.key }} указывает на
+      {{ item.value | urlsplit('hostname') }}, которого нет в
+      closed_contour_allowed_hosts ({{ closed_contour_allowed_hosts | join(', ') }}).
+    quiet: true
+  loop: "{{ preflight_artifact_sources }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: closed_contour_allowed_hosts | length > 0
+
+- name: Report the checked sources
+  ansible.builtin.debug:
+    msg: >-
+      Проверено источников: {{ preflight_artifact_sources | length }},
+      все ведут в контур
+      ({{ preflight_artifact_sources
+          | map(attribute='value') | map('urlsplit', 'hostname')
+          | unique | sort | join(', ') }}).
