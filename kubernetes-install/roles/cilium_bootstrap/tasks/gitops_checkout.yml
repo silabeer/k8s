@@ -78,8 +78,14 @@
     that:
       - cilium_values_parsed.k8sServiceHost | default(cilium_expected_api_host)
         == cilium_expected_api_host
+    # default() обязателен и в САМОМ СООБЩЕНИИ: Ansible рендерит fail_msg
+    # до вычисления условия, поэтому ссылка на отсутствующий ключ роняет
+    # проверку там, где она должна была просто пройти. Ключа нет всегда,
+    # когда kubeProxyReplacement не используется. Ровно на этом уже
+    # обжигались в дефекте 31.
     fail_msg: >-
-      В values задан k8sServiceHost={{ cilium_values_parsed.k8sServiceHost }},
+      В values задан
+      k8sServiceHost={{ cilium_values_parsed.k8sServiceHost | default('не задан') }},
       а apiserver этого кластера — {{ cilium_expected_api_host }}. С чужим
       адресом агенты Cilium не поднимутся: они будут ждать ответа от машины,
       которой в этом контуре нет.

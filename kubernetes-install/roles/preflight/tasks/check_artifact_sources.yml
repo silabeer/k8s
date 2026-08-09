@@ -93,6 +93,25 @@
     label: "{{ item.key }}"
   when: closed_contour_allowed_hosts | length > 0
 
+# Пустой сертификат — тихий отказ: задача установки CA на узле
+# пропускается по условию, зеркала остаются недоверенными, и apt отвечает
+# «The certificate issuer is unknown» уже на этапе установки пакетов.
+# Проверяется здесь, потому что это то же самое семейство ошибок:
+# источник настроен, но воспользоваться им нельзя.
+- name: Assert the registry CA is provided when mirrors use TLS
+  ansible.builtin.assert:
+    that:
+      - registry_ca_cert | default('') | length > 0
+    fail_msg: >-
+      Заданы зеркала реестра по https, но registry_ca_cert пуст. Узлы не
+      будут доверять реестру, и отказ проявится позже — на apt или на
+      загрузке образа. Сертификат лежит на реестре в
+      /opt/artifact-keeper/root-ca.crt.
+    quiet: true
+  when:
+    - registry_mirrors | default([]) | length > 0
+    - registry_mirrors | map(attribute='host') | select('search', '^https://') | list | length > 0
+
 - name: Report the checked sources
   ansible.builtin.debug:
     msg: >-

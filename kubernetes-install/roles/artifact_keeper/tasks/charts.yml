@@ -1,0 +1,94 @@
+---
+# Перенос чартов в реестр как OCI-артефактов.
+#
+# Берутся из helm-прокси этого же реестра по прямому пути: он их проксирует
+# исправно. Не годится в нём только index.yaml — он строится из кеша и
+# остаётся пустым, поэтому `helm --repo` версию не разрешает.
+
+# Реестр обращается сам к себе по своему же имени: helm push ходит по
+# https, а сертификат выписан на имя, не на адрес. Без этих двух шагов
+# login отвечает невнятно — либо не резолвится имя, либо не доверяется
+# сертификат, и по сообщению не отличить одно от другого.
+- name: Let the registry resolve its own name
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "\\s{{ artifact_keeper_site_address }}$"
+    line: "127.0.0.1 {{ artifact_keeper_site_address }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Trust the registry certificate on the registry itself
+  ansible.builtin.copy:
+    content: "{{ artifact_keeper_root_ca_early.stdout }}\n"
+    dest: /usr/local/share/ca-certificates/artifact-keeper.crt
+    owner: root
+    group: root
+    mode: "0644"
+  register: artifact_keeper_self_ca
+
+- name: Refresh the trust store  # noqa: no-handler
+  ansible.builtin.command:
+    cmd: update-ca-certificates
+  when: artifact_keeper_self_ca.changed
+  changed_when: true
+
+- name: Install the helm client on the registry
+  # Клиент нужен самому реестру: push выполняется отсюда. Берётся из
+  # локального репозитория, который наполнен шагом выше, — реестр не должен
+  # тянуть его из интернета в обход себя же.
+  ansible.builtin.unarchive:
+    src: >-
+      http://127.0.0.1:{{ artifact_keeper_http_port }}/api/v1/repositories/{{
+      artifact_keeper_binaries_repo }}/download/helm-v{{ helm_version }}-linux-amd64.tar.gz
+    dest: /usr/local/bin
+    remote_src: true
+    extra_opts: [--strip-components=1, linux-amd64/helm]
+    creates: /usr/local/bin/helm
+
+- name: Log in to the registry with helm
+  ansible.builtin.command:
+    argv:
+      - helm
+      - registry
+      - login
+      - "{{ artifact_keeper_site_address }}:{{ artifact_keeper_https_port }}"
+      - --username
+      - "{{ artifact_keeper_admin_user }}"
+      - --password-stdin
+    stdin: "{{ artifact_keeper_admin_password }}"
+  changed_when: false
+  # Отключаемо: скрытая причина отказа здесь уже стоила разбора.
+  no_log: "{{ artifact_keeper_no_log | default(true) | bool }}"
+
+- name: Check which charts are already in the registry
+  # Повторная заливка того же чарта не нужна и давала бы «changed» в каждом
+  # прогоне. Проверяется наличие тега в OCI-репозитории.
+  ansible.builtin.uri:
+    url: >-
+      http://127.0.0.1:{{ artifact_keeper_http_port }}/v2/{{
+      artifact_keeper_charts_repo }}/{{ item.name }}/manifests/{{
+      item.version | regex_replace('^v', '') }}
+    headers:
+      Accept: application/vnd.oci.image.manifest.v1+json
+    status_code: [200, 401, 404]
+  register: artifact_keeper_chart_state
+  loop: "{{ artifact_keeper_charts }}"
+  loop_control:
+    label: "{{ item.name }}-{{ item.version }}"
+
+- name: Transfer the missing charts
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail &&
+      curl -sfL -o /tmp/{{ item.0.name }}.tgz
+      "http://127.0.0.1:{{ artifact_keeper_http_port }}/helm/{{ item.0.proxy }}/charts/{{ item.0.name }}-{{ item.0.version }}.tgz"
+      && helm push /tmp/{{ item.0.name }}.tgz
+      oci://{{ artifact_keeper_site_address }}:{{ artifact_keeper_https_port }}/{{ artifact_keeper_charts_repo }}
+      && rm -f /tmp/{{ item.0.name }}.tgz
+    executable: /bin/bash
+  loop: "{{ artifact_keeper_charts | zip(artifact_keeper_chart_state.results) | list }}"
+  loop_control:
+    label: "{{ item.0.name }}-{{ item.0.version }}"
+  when: item.1.status != 200
+  changed_when: true

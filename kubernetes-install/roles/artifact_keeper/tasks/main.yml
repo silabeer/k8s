@@ -105,6 +105,16 @@
   ansible.builtin.import_tasks: seed.yml
   when: artifact_keeper_seed_binaries | length > 0 or artifact_keeper_seed_apt | bool
 
+- name: Read the root certificate before transferring charts
+  ansible.builtin.command:
+    argv: [docker, exec, artifact-keeper-caddy, cat, /data/caddy/pki/authorities/local/root.crt]
+  register: artifact_keeper_root_ca_early
+  changed_when: false
+
+- name: Transfer the charts into the registry
+  ansible.builtin.import_tasks: charts.yml
+  when: artifact_keeper_charts | length > 0
+
 - name: Read the root certificate of the registry
   # Caddy выпускает сертификат собственным центром. Его сертификат нужен
   # узлам кластера: без него containerd не доверяет зеркалу, и отказ
@@ -113,6 +123,19 @@
     argv: [docker, exec, artifact-keeper-caddy, cat, /data/caddy/pki/authorities/local/root.crt]
   register: artifact_keeper_root_ca
   changed_when: false
+
+# Сертификат сохраняется НА ДИСК, а не только в переменную: его нужно
+# перенести в инвентари кластеров, и файл — единственный удобный способ
+# это сделать. Без него оператор копирует несуществующий путь и получает
+# пустое значение, а задача установки CA на узлах тихо пропускается по
+# условию «переменная не пуста».
+- name: Save the root certificate for the cluster inventories
+  ansible.builtin.copy:
+    content: "{{ artifact_keeper_root_ca.stdout }}\n"
+    dest: "{{ artifact_keeper_dir }}/root-ca.crt"
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Report how to point the cluster at the registry
   ansible.builtin.debug:

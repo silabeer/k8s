@@ -92,6 +92,12 @@ artifact_keeper_repositories:
   - {key: proxy-helm-csr, format: helm, type: remote, upstream: "https://postfinance.github.io/kubelet-csr-approver"}
   - {key: binaries, format: generic, type: local}
 
+  # Локальный репозиторий под чарты в форме OCI. Помечен docker, а не helm:
+  # OCI-артефакты живут в реестре образов, и `helm push` работает именно с
+  # ним. Прокси helm рядом остаётся полезным — из него чарты и берутся при
+  # наполнении, — но для установки не годится (см. ниже).
+  - {key: charts, format: docker, type: local}
+
   # Пакеты операционной системы. Без них контур не закрыт: apt на узлах
   # ходил бы в интернет напрямую при каждом обновлении. Раскладка у архива
   # Ubuntu стандартная (dists/ + pool/), поэтому он проксируется как есть —
@@ -110,6 +116,23 @@ artifact_keeper_repositories:
 # означало бы, что установка тянет из реестра не то, что просит.
 # -----------------------------------------------------------------------------
 artifact_keeper_binaries_repo: binaries
+
+# -----------------------------------------------------------------------------
+# Чарты
+#
+# Переносятся в реестр как OCI-артефакты. Форма repo не работает: helm-прокси
+# отдаёт сам чарт по прямому пути /charts/<имя>-<версия>.tgz, но index.yaml
+# строит из собственного кеша и оставляет пустым (entries: {}), а
+# `helm --repo` без индекса версию не разрешает и отвечает «chart not found».
+#
+# Версии обязаны совпадать с cni.version и argocd.version инвентаря: иначе
+# установка запросит из реестра то, чего в нём нет.
+# -----------------------------------------------------------------------------
+artifact_keeper_charts_repo: charts
+artifact_keeper_charts:
+  - {name: cilium, version: "1.19.6", proxy: proxy-helm-cilium}
+  - {name: argo-cd, version: "10.2.1", proxy: proxy-helm-argo}
+  - {name: cert-manager, version: "v1.20.3", proxy: proxy-helm-jetstack}
 
 artifact_keeper_seed_binaries:
   - {src: "https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz",
