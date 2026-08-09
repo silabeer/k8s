@@ -38,6 +38,12 @@
       changed_when: false
       failed_when: false
 
+    # keyCertSign в keyUsage обязателен. Сертификат самоподписанный и
+    # выступает собственным издателем, а OpenSSL отказывается считать
+    # издателем сертификат, у которого KeyUsage задан, но keyCertSign в нём
+    # нет: клиент получает «unable to get local issuer certificate», хотя
+    # CA:TRUE стоит. Проверено на lookup community.hashi_vault; curl на
+    # macOS при этом тот же файл принимает, и по нему причину не найти.
     - name: Generate the certificate with the required SANs
       ansible.builtin.command:
         cmd: >-
@@ -47,7 +53,7 @@
           -addext subjectAltName={{ (openbao_tls_san_dns | map('regex_replace', '^', 'DNS:') | list
                                      + openbao_tls_san_ip | map('regex_replace', '^', 'IP:') | list)
                                     | join(',') }}
-          -addext keyUsage=digitalSignature,keyEncipherment
+          -addext keyUsage=digitalSignature,keyEncipherment,keyCertSign
           -addext extendedKeyUsage=serverAuth
       # Перевыпуск только если в текущем сертификате нет нужных адресов:
       # иначе каждый прогон менял бы сертификат и перезапускал службу.

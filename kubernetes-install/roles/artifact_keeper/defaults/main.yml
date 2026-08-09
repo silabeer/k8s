@@ -45,9 +45,15 @@ artifact_keeper_site_address: "registry.stand.local"
 artifact_keeper_admin_user: admin
 artifact_keeper_admin_password: ~
 
-# Секреты приложения. Значение JWT_SECRET по умолчанию в upstream —
-# «change-me-in-production-please», ровно 30 символов при минимуме 32,
-# поэтому стек с ним не стартует вовсе.
+# Секреты приложения. Требования у них РАЗНЫЕ, и перепутать легко:
+#
+#   * JWT_SECRET — не короче 32 СИМВОЛОВ. Значение по умолчанию в
+#     upstream («change-me-in-production-please») — ровно 30, поэтому
+#     стек из коробки не стартует вовсе;
+#   * AK_WEBHOOK_SECRET_KEY — base64, декодирующийся ровно в 32 БАЙТА,
+#     то есть `openssl rand -base64 32`. Обычная случайная строка из 32
+#     символов не подходит: backend уходит в перезапуск с
+#     «must decode to exactly 32». Проверено — именно так и вышло.
 artifact_keeper_jwt_secret: ~
 artifact_keeper_webhook_secret: ~
 artifact_keeper_peer_api_key: ~
