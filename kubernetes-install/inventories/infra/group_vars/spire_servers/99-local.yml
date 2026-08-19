@@ -1,0 +1,15 @@
+---
+# Проверка ADR 0003: CA сервера SPIRE подчинён PKI-движку OpenBao.
+spire_upstream_authority: vault
+spire_vault_addr: "https://127.0.0.1:8200"
+spire_vault_pki_mount: pki_identity
+spire_vault_ca_cert_path: /opt/openbao/tls/tls.crt
+spire_vault_token: "s.tRHIf9svxZvbcMPaLLvadqy3"
+
+# Кластеров на этом стенде нет — аттестуем агента одноразовым токеном.
+spire_node_attestor_join_token: true
+spire_clusters: []
+
+spire_trust_domain: "platform.local"
+spire_ca_ttl: "24h"
+spire_default_x509_svid_ttl: "1h"

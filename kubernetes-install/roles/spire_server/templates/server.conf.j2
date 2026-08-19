@@ -47,6 +47,41 @@ plugins {
         }
     }
 
+{% if spire_upstream_authority == 'vault' %}
+{#
+  UpstreamAuthority подчиняет CA сервера SPIRE внешнему PKI: сервер
+  перестаёт быть корнем и получает ПРОМЕЖУТОЧНЫЙ сертификат, а выданные им
+  SVID проверяются цепочкой до корпоративного корня (ADR 0003).
+
+  Плагин написан под HashiCorp Vault. OpenBao совместим по API, и это
+  ровно то допущение, ради проверки которого схема разворачивалась.
+
+  ca_cert_path обязателен, когда сам PKI работает под собственным центром
+  сертификации: без него плагин не доверяет серверу, и отказ выглядит как
+  ошибка соединения, а не как отсутствие доверия.
+-#}
+    UpstreamAuthority "vault" {
+        plugin_data {
+            vault_addr      = "{{ spire_vault_addr }}"
+            pki_mount_point = "{{ spire_vault_pki_mount }}"
+            ca_cert_path    = "{{ spire_vault_ca_cert_path }}"
+
+            token_auth {
+                token = "{{ spire_vault_token }}"
+            }
+        }
+    }
+{% endif %}
+{% if spire_node_attestor_join_token %}
+{#
+  join_token нужен там, где кластеров ещё нет: аттестация агента
+  одноразовым токеном. Для production не годится — токен выдаёт человек, —
+  но проверить механизм выдачи SVID им дешевле, чем поднимать кластер.
+-#}
+    NodeAttestor "join_token" {
+        plugin_data {}
+    }
+{% endif %}
 {% for cluster in spire_clusters %}
     NodeAttestor "k8s_psat" {
         plugin_data {

@@ -9,7 +9,9 @@
       # по которому причину не найти.
       - spire_clusters is sequence
       - spire_clusters is not string
-      - spire_clusters | length > 0
+      # Кластеров может не быть вовсе, если включён аттестатор одноразовыми
+      # токенами: он позволяет проверить выдачу SVID до появления кластеров.
+      - spire_clusters | length > 0 or spire_node_attestor_join_token | bool
     fail_msg: >-
       Задайте spire_trust_domain и хотя бы один кластер в spire_clusters.
       Без кластеров сервер поднимется, но ни один узел не пройдёт

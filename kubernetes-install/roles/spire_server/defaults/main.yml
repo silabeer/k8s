@@ -70,3 +70,25 @@ spire_datastore_connection_string: "{{ spire_data_dir }}/datastore.sqlite3"
 spire_clusters: []
 
 spire_manage_service: true
+
+# -----------------------------------------------------------------------------
+# Подчинение внешнему PKI (ADR 0003)
+#
+# none  — сервер сам себе корень (прежнее поведение);
+# vault — CA сервера становится ПРОМЕЖУТОЧНЫМ и подписывается PKI-движком
+#         OpenBao или Vault, а SVID проверяются цепочкой до корпоративного
+#         корня.
+#
+# Токен здесь временный, для проверки. В production вместо него AppRole или
+# аутентификация по сертификату: постоянный токен в конфигурации службы
+# означает, что компрометация узла SPIRE даёт право выдавать сертификаты от
+# имени интермедиата.
+# -----------------------------------------------------------------------------
+spire_upstream_authority: none # none | vault
+spire_vault_addr: ~
+spire_vault_pki_mount: pki_identity
+spire_vault_ca_cert_path: ~
+spire_vault_token: ~
+
+# Аттестатор одноразовыми токенами: нужен там, где кластеров ещё нет.
+spire_node_attestor_join_token: false
