@@ -1,0 +1,93 @@
+---
+# Шаг 1 церемонии подписи интермедиата: получить CSR.
+#
+# Автоматизация здесь ОБРЫВАЕТСЯ намеренно. Корень живёт офлайн, playbook
+# до него не дотянется, и попытка «сделать всё одной командой» означала бы,
+# что корень на самом деле не офлайн.
+#
+# Playbook создаёт mount, генерирует внутри него закрытый ключ (наружу он не
+# выходит НИКОГДА) и забирает только запрос на подпись.
+- name: Request an intermediate CSR from the secret backend
+  hosts: secret_backend
+  become: true
+  gather_facts: false
+
+  vars:
+    pki_mount: ~ # pki_infra | pki_identity | pki_cilium
+    pki_common_name: ~
+    pki_ttl: "26280h" # 3 года
+    pki_key_type: ec
+    pki_key_bits: 384
+    pki_csr_dest: ~ # куда положить CSR НА УПРАВЛЯЮЩЕЙ МАШИНЕ
+
+  tasks:
+    - name: Assert the parameters are given
+      ansible.builtin.assert:
+        that:
+          - pki_mount is not none
+          - pki_common_name is not none
+          - pki_csr_dest is not none
+        fail_msg: >-
+          Задайте pki_mount, pki_common_name и pki_csr_dest. Пример:
+          -e '{"pki_mount":"pki_infra","pki_common_name":"Platform Infra
+          Intermediate","pki_csr_dest":"./infra.csr"}'
+        quiet: true
+
+    - name: Enable the PKI engine
+      ansible.builtin.command:
+        argv: [bao, secrets, enable, "-path={{ pki_mount }}", pki]
+      environment: &bao_env
+        BAO_ADDR: "{{ openbao_url | default('https://127.0.0.1:8200') }}"
+        BAO_CACERT: "{{ openbao_tls_dir }}/tls.crt"
+        BAO_TOKEN: "{{ openbao_token }}"
+      register: pki_enable
+      changed_when: pki_enable.rc == 0
+      # Повторный прогон на существующем mount'е — не ошибка: церемония
+      # повторяется при каждом продлении интермедиата.
+      failed_when:
+        - pki_enable.rc != 0
+        - "'path is already in use' not in pki_enable.stderr"
+
+    - name: Raise the maximum lease time on the mount
+      # Без этого выпуск на три года отвергается: умолчание mount'а короче
+      # запрошенного ttl, а сообщение говорит про lease, а не про срок.
+      ansible.builtin.command:
+        argv: [bao, secrets, tune, "-max-lease-ttl={{ pki_ttl }}", "{{ pki_mount }}"]
+      environment: *bao_env
+      changed_when: true
+
+    - name: Generate the private key and the signing request
+      ansible.builtin.command:
+        argv:
+          - bao
+          - write
+          - -field=csr
+          - "{{ pki_mount }}/intermediate/generate/internal"
+          - "common_name={{ pki_common_name }}"
+          - "key_type={{ pki_key_type }}"
+          - "key_bits={{ pki_key_bits }}"
+          - "ttl={{ pki_ttl }}"
+      environment: *bao_env
+      register: pki_csr
+      changed_when: true
+      no_log: "{{ pki_no_log | default(true) | bool }}"
+
+    - name: Fetch the CSR to the control machine
+      ansible.builtin.copy:
+        content: "{{ pki_csr.stdout }}\n"
+        dest: "{{ pki_csr_dest }}"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Report what to do next
+      ansible.builtin.debug:
+        msg: >-
+          CSR записан в {{ pki_csr_dest }}. Закрытый ключ остался внутри
+          OpenBao и наружу не выходил. Дальше — церемония на изолированной
+          машине: подписать корнем и вернуть сертификат.
+          ВАЖНО: pathlen. Для {{ pki_mount }} нужен
+          {{ 'pathlen:1 — под ним появится ещё один CA (сервер SPIRE)'
+             if pki_mount == 'pki_identity'
+             else 'pathlen:0 — выпуск CA под ним должен быть запрещён' }}.
+          Затем 95-pki-intermediate-install.yml.

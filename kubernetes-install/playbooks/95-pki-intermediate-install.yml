@@ -1,0 +1,116 @@
+---
+# Шаг 2 церемонии: загрузить подписанный интермедиат обратно.
+#
+# Между этим playbook и 94-м стоит человек с изолированной машиной. Здесь
+# автоматизация возобновляется.
+#
+# Два шага, которые легко забыть и которые оба стоили разбора на стенде:
+#   * переключить издателя по умолчанию — set-signed создаёт НОВОГО
+#     издателя, а умолчанием остаётся прежний, и движок продолжает
+#     подписывать старым сертификатом; текст ошибки при этом не меняется
+#     ни на букву, и выглядит так, будто исправление не подействовало;
+#   * проверить pathlen — интермедиат под SPIRE обязан допускать ещё один
+#     уровень CA, а интермедиат для листовых обязан его запрещать.
+- name: Install a signed intermediate certificate
+  hosts: secret_backend
+  become: true
+  gather_facts: false
+
+  vars:
+    pki_mount: ~
+    pki_signed_cert: ~ # файл НА УПРАВЛЯЮЩЕЙ МАШИНЕ: интермедиат + корень
+    pki_expect_pathlen: ~ # 0 или 1 — обязательный параметр, см. ниже
+
+  tasks:
+    - name: Assert the parameters are given
+      ansible.builtin.assert:
+        that:
+          - pki_mount is not none
+          - pki_signed_cert is not none
+          - pki_expect_pathlen is not none
+        fail_msg: >-
+          Задайте pki_mount, pki_signed_cert и pki_expect_pathlen.
+          Последний обязателен намеренно: неверный pathlen — самая дорогая
+          ошибка этой церемонии, потому что проявляется она не здесь, а
+          позже и невнятно.
+        quiet: true
+
+    - name: Read the signed certificate
+      ansible.builtin.slurp:
+        src: "{{ pki_signed_cert }}"
+      register: pki_signed
+      delegate_to: localhost
+      become: false
+
+    - name: Assert the certificate has the expected path length
+      # Проверка ДО загрузки: после неё разбираться дороже. С pathlen:0
+      # сервер SPIRE падает при старте с «signing certificate has a max
+      # path length of zero», а с лишним pathlen интермедиат для листовых
+      # разрешает выпуск CA, чего быть не должно.
+      ansible.builtin.assert:
+        that:
+          - (pki_expect_pathlen | int == 0 and 'pathlen' not in pki_cert_text)
+            or ('pathlen:' ~ pki_expect_pathlen) in pki_cert_text
+        fail_msg: >-
+          В сертификате нет ожидаемого ограничения длины пути
+          (pathlen:{{ pki_expect_pathlen }}). Подпишите заново с верным
+          basicConstraints — иначе отказ проявится позже: SPIRE не
+          стартует либо интермедиат разрешает выпуск CA.
+        quiet: true
+      vars:
+        pki_cert_text: >-
+          {{ lookup('pipe', 'openssl x509 -noout -text -in '
+             ~ pki_signed_cert ~ " | tr -d ' '") }}
+
+    - name: Copy the signed certificate to the backend
+      ansible.builtin.copy:
+        content: "{{ pki_signed.content | b64decode }}"
+        dest: "/tmp/{{ pki_mount }}-signed.crt"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Import the signed certificate
+      ansible.builtin.command:
+        argv:
+          - bao
+          - write
+          - -field=imported_issuers
+          - "{{ pki_mount }}/intermediate/set-signed"
+          - "certificate=@/tmp/{{ pki_mount }}-signed.crt"
+      environment: &bao_env
+        BAO_ADDR: "{{ openbao_url | default('https://127.0.0.1:8200') }}"
+        BAO_CACERT: "{{ openbao_tls_dir }}/tls.crt"
+        BAO_TOKEN: "{{ openbao_token }}"
+      register: pki_imported
+      changed_when: true
+
+    - name: Make the new certificate the default issuer
+      ansible.builtin.command:
+        argv:
+          - bao
+          - write
+          - "{{ pki_mount }}/config/issuers"
+          - "default={{ pki_imported.stdout | regex_replace('[\\[\\] ]', '') | trim }}"
+      environment: *bao_env
+      changed_when: true
+
+    - name: Read back what the mount now signs with
+      ansible.builtin.command:
+        argv: [bao, read, -field=certificate, "{{ pki_mount }}/cert/ca"]
+      environment: *bao_env
+      register: pki_active
+      changed_when: false
+
+    - name: Remove the temporary copy
+      ansible.builtin.file:
+        path: "/tmp/{{ pki_mount }}-signed.crt"
+        state: absent
+
+    - name: Report the active issuer
+      ansible.builtin.debug:
+        msg: >-
+          {{ pki_mount }} подписывает сертификатом:
+          {{ pki_active.stdout | regex_search('(?s).*') | length }} байт.
+          Проверьте, что это именно новый издатель:
+          bao read {{ pki_mount }}/config/issuers
