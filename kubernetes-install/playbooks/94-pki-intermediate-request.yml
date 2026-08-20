@@ -38,7 +38,11 @@
         argv: [bao, secrets, enable, "-path={{ pki_mount }}", pki]
       environment: &bao_env
         BAO_ADDR: "{{ openbao_url | default('https://127.0.0.1:8200') }}"
-        BAO_CACERT: "{{ openbao_tls_dir }}/tls.crt"
+        # default() обязателен: playbook НЕ подключает роль openbao, а
+        # значит её умолчания ему недоступны. Без него отказ приходит на
+        # первой же задаче и говорит про undefined variable, а не про то,
+        # что переменную надо задать.
+        BAO_CACERT: "{{ openbao_tls_dir | default('/opt/openbao/tls') }}/tls.crt"
         BAO_TOKEN: "{{ openbao_token }}"
       register: pki_enable
       changed_when: pki_enable.rc == 0
@@ -78,7 +82,12 @@
         dest: "{{ pki_csr_dest }}"
         mode: "0644"
       delegate_to: localhost
-      become: false
+      vars:
+        # Именно переменной, а не ключевым словом `become: false`:
+        # ansible_become из инвентаря имеет более высокий приоритет, и
+        # задача уходит в sudo НА УПРАВЛЯЮЩЕЙ МАШИНЕ, где ему делать
+        # нечего. Отказ при этом говорит про пароль, а не про приоритет.
+        ansible_become: false
 
     - name: Report what to do next
       ansible.builtin.debug:

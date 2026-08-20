@@ -57,9 +57,16 @@
           -addext extendedKeyUsage=serverAuth
       # Перевыпуск только если в текущем сертификате нет нужных адресов:
       # иначе каждый прогон менял бы сертификат и перезапускал службу.
+      # Проверяются И адреса, И ИМЕНА. Первая версия смотрела только на
+      # адреса, и добавление DNS-имени перевыпуск не запускало: сертификат
+      # оставался прежним, а отказ приходил у клиента и говорил
+      # «certificate is valid for openbao-01, localhost, not <имя>» —
+      # то есть про сертификат, а не про то, что роль его не обновила.
       when: >-
         openbao_existing_san.rc != 0 or
         (openbao_tls_san_ip | reject('equalto', '127.0.0.1') | list
+         | reject('in', openbao_existing_san.stdout) | list | length > 0) or
+        (openbao_tls_san_dns | reject('equalto', 'localhost') | list
          | reject('in', openbao_existing_san.stdout) | list | length > 0)
       # Задача выполняется только по условию выше, то есть её запуск и
       # означает перевыпуск. Без этого линтер справедливо указывает, что

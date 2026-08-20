@@ -40,7 +40,10 @@
         src: "{{ pki_signed_cert }}"
       register: pki_signed
       delegate_to: localhost
-      become: false
+      vars:
+        # См. пояснение в 94-pki-intermediate-request.yml: ключевое слово
+        # `become: false` не перебивает ansible_become из инвентаря.
+        ansible_become: false
 
     - name: Assert the certificate has the expected path length
       # Проверка ДО загрузки: после неё разбираться дороже. С pathlen:0
@@ -49,8 +52,11 @@
       # разрешает выпуск CA, чего быть не должно.
       ansible.builtin.assert:
         that:
-          - (pki_expect_pathlen | int == 0 and 'pathlen' not in pki_cert_text)
-            or ('pathlen:' ~ pki_expect_pathlen) in pki_cert_text
+          # Требуется ЯВНОЕ pathlen:N. Отсутствие ограничения означает не
+          # ноль, а неограниченную длину цепочки — то есть прямо обратное
+          # тому, что мы проверяем. Первая версия этой проверки такой
+          # сертификат пропускала.
+          - ('pathlen:' ~ pki_expect_pathlen) in pki_cert_text
         fail_msg: >-
           В сертификате нет ожидаемого ограничения длины пути
           (pathlen:{{ pki_expect_pathlen }}). Подпишите заново с верным
@@ -70,28 +76,65 @@
         group: root
         mode: "0600"
 
+    # -format=json, а не -field: при ПОВТОРНОМ прогоне импортировать нечего,
+    # поля imported_issuers в ответе нет вовсе, и -field падает с
+    # «Field "imported_issuers" not present in secret». Церемония же
+    # повторяется — хотя бы когда её прогоняют второй раз после разбора, —
+    # поэтому playbook обязан это переживать.
     - name: Import the signed certificate
       ansible.builtin.command:
         argv:
           - bao
           - write
-          - -field=imported_issuers
+          - -format=json
           - "{{ pki_mount }}/intermediate/set-signed"
           - "certificate=@/tmp/{{ pki_mount }}-signed.crt"
       environment: &bao_env
         BAO_ADDR: "{{ openbao_url | default('https://127.0.0.1:8200') }}"
-        BAO_CACERT: "{{ openbao_tls_dir }}/tls.crt"
+        # default() обязателен: playbook НЕ подключает роль openbao, а
+        # значит её умолчания ему недоступны. Без него отказ приходит на
+        # первой же задаче и говорит про undefined variable, а не про то,
+        # что переменную надо задать.
+        BAO_CACERT: "{{ openbao_tls_dir | default('/opt/openbao/tls') }}/tls.crt"
         BAO_TOKEN: "{{ openbao_token }}"
       register: pki_imported
       changed_when: true
 
-    - name: Make the new certificate the default issuer
+    - name: Determine which issuer to make default
+      # imported_issuers — при первом импорте, existing_issuers — при
+      # повторном. Пустой результат означает, что сертификат в mount не
+      # попал, и это отказ, а не «нечего делать».
+      #
+      # default([], true) — со вторым аргументом обязательно: поле в ответе
+      # ПРИСУТСТВУЕТ, но равно null, а обычный default() срабатывает только
+      # на неопределённое значение и null пропускает дальше.
+      ansible.builtin.set_fact:
+        pki_issuer_id: >-
+          {{ ((pki_imported.stdout | from_json).data.imported_issuers | default([], true))
+             + ((pki_imported.stdout | from_json).data.existing_issuers | default([], true)) }}
+
+    - name: Assert the certificate reached the mount
+      ansible.builtin.assert:
+        that:
+          - pki_issuer_id | length > 0
+        fail_msg: >-
+          set-signed не вернул ни imported_issuers, ни existing_issuers —
+          сертификат в mount не попал. Проверьте, что подписан именно тот
+          CSR, который выдал 94-pki-intermediate-request.yml: чужой CSR
+          означает, что закрытый ключ в mount'е не соответствует
+          сертификату.
+        quiet: true
+
+    - name: Make the certificate the default issuer
+      # Шаг, который легко пропустить: set-signed создаёт нового издателя,
+      # а умолчанием остаётся прежний, и движок продолжает подписывать
+      # старым сертификатом. Текст ошибки при этом не меняется ни на букву.
       ansible.builtin.command:
         argv:
           - bao
           - write
           - "{{ pki_mount }}/config/issuers"
-          - "default={{ pki_imported.stdout | regex_replace('[\\[\\] ]', '') | trim }}"
+          - "default={{ pki_issuer_id | first }}"
       environment: *bao_env
       changed_when: true
 
