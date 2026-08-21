@@ -1,0 +1,106 @@
+# {{ ansible_managed }}
+#
+# Конфигурация Knot DNS. Формат YAML.
+#
+# Роль этого сервера: {{ knot_role }}
+{% if knot_role == 'primary' %}
+# Первичный СКРЫТЫЙ: в NS-записях не значится, резолверы к нему не ходят.
+# Его отказ останавливает изменения, но не разрешение имён.
+{% else %}
+# Вторичный: обслуживает запросы, зоны тянет с первичного.
+{% endif %}
+
+server:
+    user: {{ knot_user }}:{{ knot_user }}
+    listen: [{{ knot_listen | join(', ') }}]
+
+log:
+  - target: syslog
+    any: info
+
+key:
+  - id: transfer
+    algorithm: {{ knot_tsig_algorithm }}
+    secret: {{ knot_tsig_transfer_key }}
+{% if knot_role == 'primary' and knot_tsig_acme_key %}
+  - id: acme-update
+    algorithm: {{ knot_tsig_algorithm }}
+    secret: {{ knot_tsig_acme_key }}
+{% endif %}
+
+acl:
+{% if knot_role == 'primary' %}
+  # Передавать зону могут только вторичные и только с ключом transfer.
+  - id: allow-transfer
+    address: [{{ knot_secondary_addresses | join(', ') }}]
+    key: transfer
+    action: transfer
+
+{% if knot_tsig_acme_key %}
+  # Обновлять — только ключом acme-update. Ограничение по зоне задаётся
+  # тем, что этот acl подключается ИСКЛЮЧИТЕЛЬНО к динамической зоне:
+  # ключ не даёт власти над записями сервисов (ADR 0006, раздел 5).
+  - id: allow-acme-update
+    key: acme-update
+    action: update
+{% endif %}
+{% else %}
+  # Принимать NOTIFY только от первичного.
+  - id: allow-notify
+    address: [{{ knot_primary_address }}]
+    key: transfer
+    action: notify
+{% endif %}
+
+{% if knot_role == 'secondary' %}
+remote:
+  - id: primary
+    address: {{ knot_primary_address }}
+    key: transfer
+{% endif %}
+
+template:
+  - id: default
+    storage: {{ knot_storage_dir }}
+{% if knot_role == 'primary' %}
+    # difference + increment: серийник ведёт САМ Knot при изменении файла
+    # зоны. Это снимает необходимость выдумывать детерминированный
+    # серийник при рендере из Git (ADR 0006, раздел 4).
+    zonefile-load: difference
+    serial-policy: increment
+{% if knot_secondary_addresses | length > 0 %}
+    notify: [secondaries]
+{% endif %}
+    acl: [allow-transfer]
+{% else %}
+    master: [primary]
+    acl: [allow-notify]
+{% endif %}
+
+{% if knot_role == 'primary' and knot_secondary_addresses | length > 0 %}
+remote:
+{% for addr in knot_secondary_addresses %}
+  - id: secondary-{{ loop.index }}
+    address: {{ addr }}
+    key: transfer
+{% endfor %}
+
+remotes:
+  - id: secondaries
+    remote: [{% for addr in knot_secondary_addresses %}secondary-{{ loop.index }}{{ ", " if not loop.last }}{% endfor %}]
+{% endif %}
+
+zone:
+{% for z in knot_zones %}
+  - domain: {{ z.name }}
+    template: default
+{% if knot_role == 'primary' %}
+    file: {{ knot_storage_dir }}/{{ z.name }}.zone
+{% if z.dynamic | default(false) and knot_tsig_acme_key %}
+    # Динамическая зона: принимает UPDATE. Список acl ЗАМЕЩАЕТ значение из
+    # шаблона, поэтому передачу зоны здесь надо перечислить заново — иначе
+    # вторичные перестанут её тянуть, а заметно это станет не сразу.
+    acl: [allow-transfer, allow-acme-update]
+{% endif %}
+{% endif %}
+{% endfor %}

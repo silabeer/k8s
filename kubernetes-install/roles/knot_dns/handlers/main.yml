@@ -1,0 +1,8 @@
+---
+- name: Reload knot
+  # reload, а не restart: перезапуск сбрасывает журналы зон и на секунды
+  # выводит сервер из обслуживания без нужды.
+  ansible.builtin.systemd:
+    name: knot
+    state: reloaded
+  when: knot_manage_service | bool

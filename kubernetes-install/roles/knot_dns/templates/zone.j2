@@ -1,0 +1,22 @@
+; {{ ansible_managed }}
+;
+; Зона {{ zone.name }} — рендерится из записей в Git и правится ТОЛЬКО там.
+; Ручные изменения на сервере будут затёрты следующей выкладкой.
+;
+; Серийник здесь фиксирован единицей намеренно: его ведёт сам Knot
+; (zonefile-load: difference, serial-policy: increment). Попытка
+; проставлять его при рендере даёт либо неубывающие значения при откате
+; изменения, либо расхождение между серверами.
+$ORIGIN {{ zone.name }}.
+$TTL {{ knot_default_ttl }}
+
+@   IN  SOA {{ knot_soa_primary_ns }} {{ knot_soa_email }} (
+        1           ; serial — ведёт Knot
+        {{ knot_soa_refresh }}    ; refresh
+        {{ knot_soa_retry }}      ; retry
+        {{ knot_soa_expire }}     ; expire — до него вторичные отдают старое
+        {{ knot_soa_minimum }} )  ; minimum
+
+{% for r in zone.records | default([]) %}
+{{ "%-30s" | format(r.name) }} {{ r.ttl | default(knot_default_ttl) }} IN {{ "%-6s" | format(r.type) }} {{ r.value }}
+{% endfor %}

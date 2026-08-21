@@ -1,0 +1,21 @@
+---
+# Авторитативный DNS контура (ADR 0006).
+#
+# Порядок важен: сначала первичный, потом вторичные. Вторичный при старте
+# пытается получить зону, и если первичного ещё нет, он поднимется без неё
+# и будет отвечать SERVFAIL до первого успешного переноса.
+- name: Hidden primary
+  hosts: dns_primary
+  become: true
+  roles:
+    - role: knot_dns
+      vars:
+        knot_role: primary
+
+- name: Secondaries
+  hosts: dns_secondary
+  become: true
+  roles:
+    - role: knot_dns
+      vars:
+        knot_role: secondary

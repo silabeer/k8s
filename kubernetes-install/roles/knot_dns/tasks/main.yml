@@ -1,0 +1,132 @@
+---
+- name: Assert the role is configured
+  ansible.builtin.assert:
+    that:
+      - knot_role in ['primary', 'secondary']
+      - knot_tsig_transfer_key | default('') | length > 0
+      - knot_zones is sequence
+      - knot_zones is not string
+      - knot_zones | length > 0
+      - knot_soa_primary_ns is not none
+      - knot_soa_email is not none
+    fail_msg: >-
+      Задайте knot_role (primary|secondary), ключ knot_tsig_transfer_key,
+      непустой список knot_zones и параметры SOA. Проверка типа у
+      knot_zones обязательна: строка тоже имеет длину, и неверно
+      переданный параметр падал бы позже, на loop, с невнятным сообщением.
+    quiet: true
+
+- name: Assert the topology is complete
+  ansible.builtin.assert:
+    that:
+      - (knot_role == 'primary' and knot_secondary_addresses | length > 0)
+        or (knot_role == 'secondary' and knot_primary_address is not none)
+    fail_msg: >-
+      Первичному нужен список адресов вторичных (кому слать NOTIFY и кому
+      разрешать передачу зоны), вторичному — адрес первичного. Без этого
+      сервер поднимется, но зона не будет распространяться, а заметно это
+      станет только через expire.
+    quiet: true
+
+- name: Install Knot DNS
+  ansible.builtin.apt:
+    name: knot
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the storage directory
+  ansible.builtin.file:
+    path: "{{ knot_storage_dir }}"
+    state: directory
+    owner: "{{ knot_user }}"
+    group: "{{ knot_user }}"
+    mode: "0750"
+
+# Файлы зон кладутся ДО конфигурации: knotc conf-check при проверке
+# конфигурации обращается к ним, и без них проверка падает не по существу.
+- name: Render the zone files
+  ansible.builtin.template:
+    src: zone.j2
+    dest: "{{ knot_storage_dir }}/{{ item.name }}.zone"
+    owner: "{{ knot_user }}"
+    group: "{{ knot_user }}"
+    mode: "0640"
+    # Проверка зоны ДО записи: битая зона — это отказ всего, что под ней,
+    # а не одной записи.
+    validate: "kzonecheck -o {{ item.name }} %s"
+  loop: "{{ knot_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  # Динамическую зону рендерим только при первом создании: дальше её
+  # содержимое ведёт cert-manager через UPDATE, и перезапись затёрла бы
+  # выданные челленджи.
+  when: knot_role == 'primary' and not (item.dynamic | default(false))
+  notify: Reload knot
+
+- name: Create the dynamic zone once
+  ansible.builtin.template:
+    src: zone.j2
+    dest: "{{ knot_storage_dir }}/{{ item.name }}.zone"
+    owner: "{{ knot_user }}"
+    group: "{{ knot_user }}"
+    mode: "0640"
+    force: false # ключевое: не перезаписывать уже существующую
+    validate: "kzonecheck -o {{ item.name }} %s"
+  loop: "{{ knot_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: knot_role == 'primary' and (item.dynamic | default(false))
+  vars:
+    zone: "{{ item }}"
+
+- name: Render the configuration
+  ansible.builtin.template:
+    src: knot.conf.j2
+    dest: "{{ knot_config_dir }}/knot.conf"
+    owner: root
+    group: "{{ knot_user }}"
+    mode: "0640"
+    validate: "knotc --config %s conf-check"
+  no_log: "{{ knot_no_log | default(true) | bool }}"
+  notify: Reload knot
+
+- name: Enable and start Knot
+  ansible.builtin.systemd:
+    name: knot
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: knot_manage_service | bool
+
+# Обязательно ДО проверки: изменения применяет обработчик, а он сработал бы
+# в конце play — проверка прошла бы по старой конфигурации. Эта ошибка уже
+# стоила отдельного разбора в ролях haproxy_keepalived и spire_server.
+- name: Apply pending reloads before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify each zone is served
+  ansible.builtin.command:
+    argv: [dig, +short, "@127.0.0.1", "{{ item.name }}", SOA]
+  register: knot_zone_check
+  retries: 6
+  delay: 5
+  until: knot_zone_check.stdout | length > 0
+  changed_when: false
+  loop: "{{ knot_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: knot_manage_service | bool
+
+- name: Report the served zones
+  ansible.builtin.debug:
+    msg: >-
+      Knot ({{ knot_role }}) отдаёт {{ knot_zones | length }} зон.
+      {% if knot_role == 'primary' %}
+      Сервер СКРЫТЫЙ: в NS-записях его быть не должно, иначе теряется
+      смысл разделения отказов.
+      {% else %}
+      Этот сервер значится в NS-записях. Проверьте, что серийник SOA
+      совпадает с первичным — расхождение единственный симптом сломанной
+      передачи зоны, пока не истёк expire.
+      {% endif %}
