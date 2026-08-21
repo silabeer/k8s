@@ -1,7 +1,17 @@
 ---
+# Два разных обработчика, и разница существенна.
+#
+# reload перечитывает зоны и конфигурацию, но НЕ переоткрывает слушающие
+# сокеты. Смена listen через reload проходит без ошибок и без эффекта:
+# сервер продолжает слушать по-старому. Поэтому изменение конфигурации
+# требует перезапуска, а изменение зоны — нет.
+- name: Restart knot
+  ansible.builtin.systemd:
+    name: knot
+    state: restarted
+  when: knot_manage_service | bool
+
 - name: Reload knot
-  # reload, а не restart: перезапуск сбрасывает журналы зон и на секунды
-  # выводит сервер из обслуживания без нужды.
   ansible.builtin.systemd:
     name: knot
     state: reloaded

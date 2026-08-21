@@ -62,6 +62,11 @@ knot_tsig_algorithm: hmac-sha256
 #            value: "gateway.acme.idp.mbrd.ru."}
 #     - name: acme.idp.mbrd.ru
 #       dynamic: true
+#       # NS в вершине обязательны и у динамической зоны: без них это не
+#       # зона, и kzonecheck отвергает её с «missing NS at the zone apex».
+#       # Записей челленджей здесь быть не должно — их пишет cert-manager.
+#       records:
+#         - {name: "@", type: NS, value: "ns1.mbrd.ru."}
 # -----------------------------------------------------------------------------
 knot_zones: []
 
@@ -76,5 +81,10 @@ knot_soa_retry: 900
 knot_soa_expire: 2419200 # 4 недели
 knot_soa_minimum: 300
 knot_default_ttl: 300
+
+# На Ubuntu порт 53 занят stub-слушателем systemd-resolved, и Knot не
+# стартует. Выключается на выделенных серверах DNS; на машине, где Knot
+# соседствует с чем-то ещё, значение стоит пересмотреть.
+knot_disable_stub_listener: true
 
 knot_manage_service: true

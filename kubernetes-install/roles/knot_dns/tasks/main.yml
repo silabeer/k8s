@@ -28,12 +28,68 @@
       станет только через expire.
     quiet: true
 
+# Три пакета, а не один. Разбиение неочевидно и стоило отдельного разбора:
+#   knot             — сам сервер (knotd, knotc, keymgr);
+#   knot-dnssecutils — kzonecheck, которым роль проверяет зону ДО записи;
+#   knot-dnsutils    — kdig и knsupdate для проверок.
+# С одним лишь knot задача рендера зоны падает на validate с
+# «No such file or directory: kzonecheck», и по сообщению не догадаться,
+# что дело в составе пакетов.
 - name: Install Knot DNS
   ansible.builtin.apt:
-    name: knot
+    name: [knot, knot-dnssecutils, knot-dnsutils]
     state: present
     update_cache: true
     cache_valid_time: 3600
+
+# systemd-resolved на Ubuntu держит 127.0.0.53:53 и 127.0.0.54:53, и
+# попытка занять 0.0.0.0:53 отвергается с «address already in use».
+# Машина, обслуживающая зону, не может одновременно быть stub-резолвером.
+#
+# Отключается именно слушатель, а не сам resolved: он продолжает
+# разрешать имена для системы через /run/systemd/resolve/resolv.conf,
+# на который и переставляется /etc/resolv.conf.
+- name: Disable the systemd-resolved stub listener
+  when: knot_disable_stub_listener | bool
+  block:
+    - name: Create the resolved drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Turn the stub listener off
+      ansible.builtin.copy:
+        content: |
+          # Управляется Ansible, роль knot_dns. Правки будут затёрты.
+          # Порт 53 занимает Knot: этот узел авторитативный сервер зоны.
+          [Resolve]
+          DNSStubListener=no
+        dest: /etc/systemd/resolved.conf.d/10-no-stub-listener.conf
+        owner: root
+        group: root
+        mode: "0644"
+      register: knot_stub_listener
+
+    - name: Point resolv.conf at the resolved-provided file
+      # Без этого система остаётся с указателем на 127.0.0.53, где больше
+      # никто не отвечает, и узел теряет разрешение имён — включая доступ
+      # к реестру и зеркалу пакетов.
+      ansible.builtin.file:
+        src: /run/systemd/resolve/resolv.conf
+        dest: /etc/resolv.conf
+        state: link
+        force: true
+
+    - name: Restart systemd-resolved  # noqa: no-handler
+      # Задача, а не обработчик: порт должен освободиться ДО запуска Knot,
+      # который идёт ниже в этой же роли.
+      ansible.builtin.systemd:
+        name: systemd-resolved
+        state: restarted
+      when: knot_stub_listener.changed
 
 - name: Create the storage directory
   ansible.builtin.file:
@@ -62,6 +118,8 @@
   # содержимое ведёт cert-manager через UPDATE, и перезапись затёрла бы
   # выданные челленджи.
   when: knot_role == 'primary' and not (item.dynamic | default(false))
+  vars:
+    zone: "{{ item }}"
   notify: Reload knot
 
 - name: Create the dynamic zone once
@@ -89,7 +147,9 @@
     mode: "0640"
     validate: "knotc --config %s conf-check"
   no_log: "{{ knot_no_log | default(true) | bool }}"
-  notify: Reload knot
+  # Именно restart: reload не переоткрывает сокеты, и смена listen прошла
+  # бы без эффекта — сервер работает, но слушает по-старому.
+  notify: Restart knot
 
 - name: Enable and start Knot
   ansible.builtin.systemd:
@@ -107,7 +167,7 @@
 
 - name: Verify each zone is served
   ansible.builtin.command:
-    argv: [dig, +short, "@127.0.0.1", "{{ item.name }}", SOA]
+    argv: [kdig, +short, "@127.0.0.1", "{{ item.name }}", SOA]
   register: knot_zone_check
   retries: 6
   delay: 5

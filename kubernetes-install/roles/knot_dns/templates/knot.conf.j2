@@ -9,10 +9,19 @@
 {% else %}
 # Вторичный: обслуживает запросы, зоны тянет с первичного.
 {% endif %}
+#
+# Порядок секций: ссылки разрешаются по идентификаторам, поэтому remote
+# описывается ДО template, который на него ссылается.
 
 server:
     user: {{ knot_user }}:{{ knot_user }}
-    listen: [{{ knot_listen | join(', ') }}]
+    # Пробелы внутри скобок ОБЯЗАТЕЛЬНЫ: без них парсер Knot список не
+    # разбирает, но conf-check при этом отвечает «Configuration is valid»,
+    # служба запускается и работает — просто ни на чём не слушает.
+    # Единственный след в журнале: «no network interface configured».
+    # Отступ тоже значим: два пробела вместо четырёх дают
+    # «invalid indentation».
+    listen: [ {{ knot_listen | join(', ') }} ]
 
 log:
   - target: syslog
@@ -35,9 +44,9 @@ acl:
     address: [{{ knot_secondary_addresses | join(', ') }}]
     key: transfer
     action: transfer
-
 {% if knot_tsig_acme_key %}
-  # Обновлять — только ключом acme-update. Ограничение по зоне задаётся
+
+  # Обновлять — только ключом acme-update. Ограничение по зоне достигается
   # тем, что этот acl подключается ИСКЛЮЧИТЕЛЬНО к динамической зоне:
   # ключ не даёт власти над записями сервисов (ADR 0006, раздел 5).
   - id: allow-acme-update
@@ -52,8 +61,14 @@ acl:
     action: notify
 {% endif %}
 
-{% if knot_role == 'secondary' %}
 remote:
+{% if knot_role == 'primary' %}
+{% for addr in knot_secondary_addresses %}
+  - id: secondary-{{ loop.index }}
+    address: {{ addr }}
+    key: transfer
+{% endfor %}
+{% else %}
   - id: primary
     address: {{ knot_primary_address }}
     key: transfer
@@ -69,25 +84,15 @@ template:
     zonefile-load: difference
     serial-policy: increment
 {% if knot_secondary_addresses | length > 0 %}
-    notify: [secondaries]
+    # Список идентификаторов remote напрямую. Групп remotes в этой версии
+    # Knot нет: ссылка на несуществующую группу отвергается при
+    # conf-check как «invalid reference».
+    notify: [{% for addr in knot_secondary_addresses %}secondary-{{ loop.index }}{{ ", " if not loop.last }}{% endfor %}]
 {% endif %}
     acl: [allow-transfer]
 {% else %}
     master: [primary]
     acl: [allow-notify]
-{% endif %}
-
-{% if knot_role == 'primary' and knot_secondary_addresses | length > 0 %}
-remote:
-{% for addr in knot_secondary_addresses %}
-  - id: secondary-{{ loop.index }}
-    address: {{ addr }}
-    key: transfer
-{% endfor %}
-
-remotes:
-  - id: secondaries
-    remote: [{% for addr in knot_secondary_addresses %}secondary-{{ loop.index }}{{ ", " if not loop.last }}{% endfor %}]
 {% endif %}
 
 zone:

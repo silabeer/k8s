@@ -1,0 +1,26 @@
+---
+# Адрес вторичного — заглушка: вторая ВМ не поднялась. Используется только
+# в ACL и NOTIFY, на проверку конфигурации не влияет.
+knot_secondary_addresses:
+  - "10.129.0.6"
+
+knot_tsig_transfer_key: "/xBw6dszGrrR3G52droc2h0J92IoeREyJ/XViaI8tqw="
+knot_tsig_acme_key: "exlC3ef19M96TzHCx8dKKjniCqwqSSvaeJEZFef4XAM="
+
+knot_soa_primary_ns: "ns1.mbrd.ru."
+knot_soa_email: "hostmaster.mbrd.ru."
+
+knot_zones:
+  - name: idp.mbrd.ru
+    dynamic: false
+    records:
+      - {name: "@", type: NS, value: "ns1.mbrd.ru."}
+      - {name: "@", type: NS, value: "ns2.mbrd.ru."}
+      - {name: "acme", type: NS, value: "ns1.mbrd.ru."}
+      - {name: "gateway", type: A, value: "10.10.20.1"}
+      - {name: "_acme-challenge.gateway", type: CNAME, value: "gateway.acme.idp.mbrd.ru."}
+  - name: acme.idp.mbrd.ru
+    dynamic: true
+    records:
+      - {name: "@", type: NS, value: "ns1.mbrd.ru."}
+      - {name: "@", type: NS, value: "ns2.mbrd.ru."}
